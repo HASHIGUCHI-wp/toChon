@@ -9,8 +9,8 @@ ti.init(arch=ti.gpu, default_fp=ti.f64, device_memory_fraction=0.9)
 
 SLIP = True
 msh_s = meshio.read('/home/hashiguchi/mpm_simulation/geometry/BendingArm/BendingArmLabelSize0.2-3.msh')
-msh_f_add = meshio.read('/home/hashiguchi/mpm_simulation/geometry/BendingArm/AWLarge4x4Size0.15-2.msh')
-msh_f_init = meshio.read('/home/hashiguchi/mpm_simulation/geometry/BendingArm/Air4x4Size0.15-2.msh')
+msh_f_add = meshio.read('/home/hashiguchi/mpm_simulation/geometry/BendingArm/addWaterR2.0L3.0Size0.2-3.msh')
+msh_f_init = meshio.read('/home/hashiguchi/mpm_simulation/geometry/BendingArm/initWater4x4Size0.2-3.msh')
 
 
 dx = 0.3
@@ -82,7 +82,7 @@ FLUID = 0
 SOLID = 1
 WAIT = 2
 
-
+@ti.data_oriented
 class BendingArm():
     def __init__(self):
         self.output_times = ti.field(dtype=ti.i32, shape=())
@@ -127,12 +127,13 @@ class BendingArm():
         self.esN_pN = ti.field(dtype=ti.i32, shape=(self.num_es_s, self.num_node_sur_s))
         self.tN_pN.from_numpy(msh_s.cells_dict[self.ELE_s])
         self.esN_pN.from_numpy(msh_s.cells_dict[self.SUR_s])
-
-        self.msh_points_f_init = ti.Vector.field(dim, dtype=float, shape=self.num_p_f_init)
-        self.tN_pN_f_init = ti.field(dtype=ti.i32, shape=(self.num_p_f_init, self.num_node_ele_f))
+        
+        self.msh_points_f_init = ti.Vector.field(dim, dtype=float, shape=msh_f_init.points.shape[0])
         self.msh_points_f_init.from_numpy(msh_f_init.points)
+        self.tN_pN_f_init = ti.field(dtype=ti.i32, shape=(msh_f_init.cells_dict[self.ELE_f].shape[0], msh_f_init.cells_dict[self.ELE_f].shape[1]))
         self.tN_pN_f_init.from_numpy(msh_f_init.cells_dict[self.ELE_f])
         
+
         print("num_t_s", self.num_t_s)
         print("num_p_s", self.num_p_s)
         print("num_es_s", self.num_es_s)
@@ -143,10 +144,14 @@ class BendingArm():
         self.set_sN_inf()
         self.pesN_pN = ti.field(dtype=ti.i32, shape=(self.num_pes, self.num_node_sur_s))
         self.set_pesN_pN()
+        self.get_diri_IxIyIz_np()
+        self.get_add_IxIyIz_np()
+        
         self.pos_p.fill(-100)
         self.set_type_p()
         self.set_pos_p_s(msh_s.points)
         self.set_f_init()
+        # self.set_f_init()
         self.set_f_add()
         self.cal_m_s()
         self.set_type_p()
@@ -223,8 +228,8 @@ class BendingArm():
 
     def get_add_IxIyIz_np(self):
         add_IxIyIz_np = np.zeros(0, dtype=np.int32)
-        for _p in range(self.num_p_f_add):
-            pos_p_this = msh_f_add.points[_p]
+        for _p in range(msh_f_add.points.shape[0]):
+            pos_p_this = msh_f_add.points[_p, :]
             base_x = int((pos_p_this[0] - area_start[0]) * inv_dx - 0.5)
             base_y = int((pos_p_this[1] - area_start[1]) * inv_dx - 0.5)
             base_z = int((pos_p_this[2] - area_start[2]) * inv_dx - 0.5)
@@ -259,7 +264,7 @@ class BendingArm():
                 # "U_ele" : [U_ele.to_numpy()]
             }
         )
-        mesh_.write(dr + "/" + FILE_NAME + "_SOLID{:05d}".format(self.output_times[None]) + ".vtu")
+        mesh_.write(dr + "/" + FILE_NAME + "_SOLID{:04d}".format(self.output_times[None]) + ".vtu")
     
 
 
@@ -271,7 +276,7 @@ class BendingArm():
         pos_p_z_np = pos_p_np[:,2].copy()
         P_p_np = self.P_p.to_numpy()[self.num_p_s:num_f_end]
         point_data = {"pressure": P_p_np.copy()}
-        pointsToVTK(dr + "/" + FILE_NAME + "_FLUID{:05d}".format(self.output_times[None]), pos_p_x_np, pos_p_y_np, pos_p_z_np, data=point_data)
+        pointsToVTK(dr + "/" + FILE_NAME + "_FLUID{:04d}".format(self.output_times[None]), pos_p_x_np, pos_p_y_np, pos_p_z_np, data=point_data)
     
 
     def export_pos_diri_I(self):
@@ -428,6 +433,7 @@ class BendingArm():
             base = ti.cast((self.pos_p[p] - area_start) * inv_dx - 0.5, ti.i32)
             fx = (self.pos_p[p] - area_start) * inv_dx - ti.cast(base, float)
             w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
+            new_C_p, new_vel_p, new_d_pos_p = ti.Matrix([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]), ti.Vector([0.0, 0.0, 0.0]), ti.Vector([0.0, 0.0, 0.0])
             for i in ti.static(range(3)):
                 for j in ti.static(range(3)):
                     for k in ti.static(range(3)):
@@ -436,9 +442,12 @@ class BendingArm():
                         NpI = w[i].x * w[j].y * w[k].z
                         vel_this = self.p_I[ix, iy, iz, Type] / self.m_I[ix, iy, iz, Type]
                         vel_this = ti.Vector([0.0,0.0,0.0]) if self.m_I[ix,iy,iz,Type] == 0.0 else vel_this
-                        self.C_p[p] += 4 * inv_dx**2 * NpI * vel_this.outer_product(dist)
-                        self.vel_p[p] += NpI * vel_this
-                        self.d_pos_p[p] += NpI * vel_this * dt
+                        new_C_p += 4 * inv_dx**2 * NpI * vel_this.outer_product(dist)
+                        new_vel_p += NpI * vel_this
+                        new_d_pos_p += NpI * vel_this * dt
+            self.C_p[p] = new_C_p
+            self.vel_p[p] = new_vel_p
+            self.d_pos_p[p] = new_d_pos_p
                     
                     
     @ti.kernel
@@ -470,6 +479,7 @@ class BendingArm():
                 fx = (self.pos_p[p] - area_start) * inv_dx - ti.cast(base, float)
                 w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2] 
                 dw = [(fx - 1.5)  * inv_dx, -2 * (fx - 1) * inv_dx, (fx - 0.5) * inv_dx]
+                new_L_p = ti.Matrix([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
                 for i in ti.static(range(3)):
                     for j in ti.static(range(3)):
                         for k in ti.static(range(3)):
@@ -481,7 +491,8 @@ class BendingArm():
                                 [dw[i].x * w[j].y * w[k].z * vel_I_this.y, w[i].x * dw[j].y * w[k].z * vel_I_this.y, w[i].x * w[j].y * dw[k].z * vel_I_this.y],
                                 [dw[i].x * w[j].y * w[k].z * vel_I_this.z, w[i].x * dw[j].y * w[k].z * vel_I_this.z, w[i].x * w[j].y * dw[k].z * vel_I_this.z]
                             ])
-                            self.L_p[p] += dv
+                            new_L_p += dv
+                self.L_p[p] = new_L_p
                         
                         
     @ti.kernel
@@ -512,6 +523,7 @@ class BendingArm():
             for pd in ti.static(range(dim)):
                 self.pos_p[p][pd] = pos_p_rest_s[_p, pd]
                 self.pos_s_rest[p][pd] = pos_p_rest_s[_p, pd]
+                
         
     @ti.kernel
     def set_f_init(self):
@@ -527,9 +539,9 @@ class BendingArm():
             ]
             dot_outer_ab_ac_vec_ad = outer_ab_ac[0] * vec_ad[0] + outer_ab_ac[1] * vec_ad[1] + outer_ab_ac[2] * vec_ad[2]
             Vol = 1 / 6 * ti.abs(dot_outer_ab_ac_vec_ad)
-            self.pos_p[p] = 0.25 * (pos_a + pos_b + pos_c + pos_d)
             self.m_p[p] = rho_f * Vol
             self.rho_p[p] = rho_f
+            self.pos_p[p] = 0.25 * (pos_a + pos_b + pos_c + pos_d)
         
         
     def set_f_add(self):
@@ -599,7 +611,7 @@ class BendingArm():
                 if export:
                     self.export_Solid()
                     self.export_Fluid()
-                    self.output_times += 1
+                    self.output_times[None] += 1
                 
             with ti.Tape(self.StrainEnergy):
                 self.cal_StrainEnergy()
@@ -615,10 +627,6 @@ class BendingArm():
             self.plus_p_I_by_contact()
             self.diri_p_I()
             
-            self.L_p.fill(0)
-            self.d_pos_p.fill(0)
-            self.C_p.fill(0)
-            self.vel_p.fill(0)
             self.plus_vel_dpos_p()
             
             self.p_I.fill(0)
