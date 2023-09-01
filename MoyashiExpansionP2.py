@@ -12,13 +12,14 @@ USER = "Hashiguchi"
 USING_MACHINE = "PC"
 SCHEME = "FEM"
 ADD_INFO_LIST = False
-EXPORT = False
+EXPORT = True
 FOLDER_NAME = "MoyashiExpansionP2"
 PRESS_TIME_CHANGE = "CONST"
 DEBUG = False
 ATTENUATION = True
 DONE = 1
 PI = np.pi
+INVERSE_NORM = True
 
 FIX = 1
 PRESS_LABEL = 2
@@ -67,7 +68,7 @@ grav = 9.81
 gi = ti.Vector([0.0, -grav, 0.0])
 Press = alpha_press * young_s
 
-max_number = 5000
+max_number = 20000
 output_span = 100
 dt_max = 0.1 * dx_mesh / sound_s
 dt = 0.000215
@@ -124,6 +125,9 @@ class Expansion():
         self.set_tN_pN()
         self.cal_Ja_Ref()
         self.cal_m_p()
+        self.export_info()
+        self.export_program()
+        
 
 
         if DEBUG:
@@ -335,6 +339,12 @@ class Expansion():
             s = pd.Series(data)
             s.to_csv(export_dir + "Information", header=False)
 
+    def export_program(self):
+        with open(__file__, mode="r", encoding="utf-8") as fr:
+            prog = fr.read()
+        with open(export_dir + "/program.txt", mode="w") as fw:
+            fw.write(prog)
+            fw.flush()
 
     def export_Solid(self):
         cells = [
@@ -418,7 +428,7 @@ class Expansion():
             k3 = k1.cross(k2)
             J = k3.norm()
             norm = k3.normalized()
-            print(norm)
+            norm *= -1.0 if INVERSE_NORM else 1.0
             for _a1 in ti.static(range(3)):
                 for _a2 in ti.static(range(3)):
                     a = self.esN_pN_press[_es, _a1, _a2]
