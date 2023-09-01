@@ -23,7 +23,7 @@ INVERSE_NORM = True
 
 FIX = 1
 PRESS_LABEL = 2
-alpha_press = 0.2
+alpha_press = 0.1
 
 if EXPORT:
     DATE = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
