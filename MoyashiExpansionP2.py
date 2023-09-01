@@ -4,14 +4,17 @@ import sympy as sy
 import taichi as ti
 import datetime
 import os
+import pandas as pd
 
 ti.init(arch=ti.cpu, default_fp=ti.f64)
 
 USER = "Hashiguchi"
 USING_MACHINE = "PC"
+SCHEME = "FEM"
 ADD_INFO_LIST = False
 EXPORT = False
 FOLDER_NAME = "MoyashiExpansion"
+PRESS_TIME_CHANGE = "CONST"
 DEBUG = False
 ATTENUATION = True
 DONE = 1
@@ -29,8 +32,8 @@ if EXPORT:
 
 
 mesh_dir = "./mesh_file/"
-mesh_name = "MoyashiTransfinite2"
-msh_s = meshio.read(mesh_dir + mesh_name + ".msh")
+mesh_name_s = "MoyashiTransfinite2"
+msh_s = meshio.read(mesh_dir + mesh_name_s + ".msh")
 
 if USING_MACHINE == "PC" :
     ti.init(arch=ti.gpu, default_fp=ti.f64)
@@ -54,15 +57,15 @@ elif USING_MACHINE == "ATLAS":
 dim = 3
 nip = 3
 err = 1.0e-5
-rho = 4e1
+rho_s = 4e1
 dx_mesh = 0.25
 Z_FIX = 63.0
-young, nu = 4e5, 0.3
-la, mu = young * nu / ((1 + nu) * (1 - 2*nu)) , young / (2 * (1 + nu))
-sound_s = ti.sqrt((la + 2 * mu) / rho)
+young_s, nu_s = 4e5, 0.3
+la, mu = young_s * nu_s / ((1 + nu_s) * (1 - 2*nu_s)) , young_s / (2 * (1 + nu_s))
+sound_s = ti.sqrt((la + 2 * mu) / rho_s)
 grav = 9.81
 gi = ti.Vector([0.0, -grav, 0.0])
-PRESS = alpha_press * young
+Press = alpha_press * young_s
 
 max_number = 5000
 output_span = 100
@@ -292,7 +295,46 @@ class Expansion():
                 for _a2 in ti.static(range(3)):
                     for _a3 in ti.static(range(3)):
                         a = self.tN_pN[t, _a1, _a2, _a3]
-                        self.m_p[a] += rho * self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.v_Gauss[_a3, l] * self.gauss_w[m] * self.gauss_w[n] * self.gauss_w[l] * det_ja_ref
+                        self.m_p[a] += rho_s * self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.v_Gauss[_a3, l] * self.gauss_w[m] * self.gauss_w[n] * self.gauss_w[l] * det_ja_ref
+
+    
+    def export_info(self):
+        if EXPORT:
+            data = {
+                "date" : DATE ,
+                "Scheme" : SCHEME,
+                "mesh_name_s" : mesh_name_s,
+                "Attenuation" : ATTENUATION,
+                "max_number" : max_number,
+                "output_span" : output_span,
+                "element" : self.ELE,
+                "surface"  : self.SUR,
+                "dt" : dt,
+                "young_s" : young_s,
+                "nu_s" : nu_s,
+                "rho_s" : rho_s
+            }
+            
+            if PRESS_TIME_CHANGE == "CONST" : 
+                data_press = {
+                    "Press_Time_Change" : PRESS_TIME_CHANGE,
+                    "Press" : Press,
+                    "alpha_press" : alpha_press
+                }
+            # elif PRESS_TIME_CHANGE == "LINEAR" or PRESS_TIME_CHANGE == "TORIGO":
+            #     data_press = {
+            #         "Press_Time_Change" : PRESS_TIME_CHANGE,
+            #         "Press_Max" : Press_max,   
+            #         "Press_Min" : Press_min, 
+            #         "alpha_press" : alpha_press,
+            #         "period_step" : period_step
+            #     }
+                
+            data.update(data_press)
+            
+            s = pd.Series(data)
+            s.to_csv(export_dir + "Information", header=False)
+
 
     def export_Solid(self):
         cells = [
@@ -380,7 +422,7 @@ class Expansion():
             for _a1 in ti.static(range(3)):
                 for _a2 in ti.static(range(3)):
                     a = self.esN_pN_press[_es, _a1, _a2]
-                    self.f_p_ext[a] += PRESS * norm * self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * J * self.gauss_w[m] * self.gauss_w[n]
+                    self.f_p_ext[a] += Press * norm * self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * J * self.gauss_w[m] * self.gauss_w[n]
             # self.SUM_AREA[None] += J * self.gauss_w[m] * self.gauss_w[n]
 
 
