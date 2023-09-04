@@ -6,20 +6,20 @@ import datetime
 import os
 import pandas as pd
 from pyevtk.hl import *
-
+import sys
 
 ti.init(arch=ti.cpu, default_fp=ti.f64)
 
+RESTART = True
 USER = "Hashiguchi"
 USING_MACHINE = "PC"
 SCHEME = "MPM"
 ADD_INFO_LIST = False
 EXPORT = True
+EXPORT_NUMPY = True
 FOLDER_NAME = "MoyashiAddWaterP2"
-PRESS_TIME_CHANGE = "CONST"
-DEBUG = True
+DEBUG = False
 ATTENUATION = False
-DONE = 1
 PI = np.pi
 INVERSE_NORM = False
 ELEMENT_SOLID = "P2Q"
@@ -31,12 +31,22 @@ FLUID = 1
 
 FIX = 1
 PRESS_LABEL = 2
+SEARCH = 3
+
+DONE = 1
+BIG = 1.0e20
+EXIST = 1
+DIVERGENCE = 1
 
 if EXPORT:
     DATE = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
     dir_export = "./consequence" + "/" + FOLDER_NAME + "/" + DATE + "/"
+    dir_vtu = dir_export + "/" + "vtu"
     os.makedirs(dir_export, exist_ok=True)
-    os.makedirs(dir_export + "/" + "vtu", exist_ok=True)
+    os.makedirs(dir_vtu, exist_ok=True)
+    if EXPORT_NUMPY :
+        dir_numpy = dir_export + "/" + "numpy"
+        os.makedirs(dir_numpy, exist_ok=True)
 
 
 mesh_dir = "./mesh_file/"
@@ -104,7 +114,7 @@ add_span_time_step = int(add_span_time // dt) + 1
 dx = dx_mesh
 inv_dx = 1 / dx
 area_start = ti.Vector([-5.0, -5.0, -5.0])
-area_end = ti.Vector([30.0, 17.0, 68.0])
+area_end = ti.Vector([30.0, 17.0, 73.0])
 box_size = area_end - area_start
 nx, ny, nz = int(box_size.x * inv_dx + 1), int(box_size.y * inv_dx + 1), int(box_size.z * inv_dx + 1)
 diri_area_start = [0.0, 0.0, 63.0]
@@ -135,6 +145,7 @@ if DEBUG :
 @ti.data_oriented
 class addWater():
     def __init__(self) -> None:
+        self.time_steps = ti.field(dtype=ti.i32, shape=())
         self.output_times = ti.field(dtype=ti.i32, shape=())
         self.add_times = ti.field(dtype=ti.i32, shape=())
         self.ELE_s, self.SUR_s = "hexahedron27", "quad9"
@@ -179,18 +190,24 @@ class addWater():
         self.vel_p_f = ti.Vector.field(dim, dtype=float, shape=self.num_p_f)
         self.C_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
         self.sigma_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
-        self.epsilon_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
+        # self.epsilon_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
         self.L_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
 
         self.m_I = ti.field(dtype=float, shape=(nx, ny, nz, num_type))
         self.p_I = ti.Vector.field(dim, dtype=float, shape=(nx, ny, nz, num_type))
         self.f_F = ti.Vector.field(dim, dtype=float, shape=(nx, ny, nz))
         self.norm_S = ti.Vector.field(dim, dtype=float, shape=(nx, ny, nz))
+        self.exist_Ix = ti.field(dtype=ti.i32, shape=nx)
+        self.exist_Iy = ti.field(dtype=ti.i32, shape=ny)
+        self.exist_Iz = ti.field(dtype=ti.i32, shape=nz)
+        self.domain_edge = ti.field(dtype=ti.i32, shape=(dim, 2))
 
         self.pos_p_f_add = ti.Vector.field(dim, dtype=float, shape=self.num_p_f_add)
         self.rho_p_f_add = ti.field(dtype=float, shape=self.num_p_f_add)
         self.m_p_f_add = ti.field(dtype=float, shape=self.num_p_f_add)
 
+        self.exist_edge = ti.field(dtype=ti.i32, shape=())
+        self.divergence = ti.field(dtype=ti.i32, shape=())
 
         self.set_f_add()
         self.set_f_init()
@@ -439,6 +456,13 @@ class addWater():
                 "element_s" : self.ELE_s,
                 "element_f" : self.ELE_f,
                 "dt" : dt,
+                "dx" : dx,
+                "area_start_x" : area_start.x,
+                "area_start_y" : area_start.y,
+                "area_start_z" : area_start.z,
+                "area_end_x" : area_end.x,
+                "area_end_y" : area_end.y,
+                "area_end_z" : area_end.z,
                 "young_s" : young_s,
                 "nu_s" : nu_s,
                 "rho_s" : rho_s,
@@ -508,6 +532,17 @@ class addWater():
             data=point_data
         )
 
+    def export_numpy(self):
+        np.save(dir_numpy + "/" + "pos_p_s_{:05d}".format(self.output_times[None]), self.pos_p_s.to_numpy())
+        np.save(dir_numpy + "/" + "vel_p_s_{:05d}".format(self.output_times[None]), self.vel_p_s.to_numpy())
+        np.save(dir_numpy + "/" + "C_p_s_{:05d}".format(self.output_times[None]), self.C_p_s.to_numpy())
+
+        np.save(dir_numpy + "/" + "pos_p_f_{:05d}".format(self.output_times[None]), self.pos_p_f.to_numpy())
+        np.save(dir_numpy + "/" + "vel_p_f_{:05d}".format(self.output_times[None]), self.vel_p_f.to_numpy())
+        np.save(dir_numpy + "/" + "C_p_f_{:05d}".format(self.output_times[None]), self.C_p_f.to_numpy())
+        np.save(dir_numpy + "/" + "sigma_p_f_{:05d}".format(self.output_times[None]), self.sigma_p_f.to_numpy())
+        np.save(dir_numpy + "/" + "P_p_f_{:05d}".format(self.output_times[None]), self.P_p_f.to_numpy())
+        np.save(dir_numpy + "/" + "rho_p_f_{:05d}".format(self.output_times[None]), self.rho_p_f.to_numpy())
 
     @ti.kernel
     def cal_StrainEnergy(self):
@@ -630,6 +665,7 @@ class addWater():
                     f_p_int = - self.pos_p_s.grad[s]
                     self.m_I[ix, iy, iz, SOLID] += NpI * self.m_p_s[s]
                     self.p_I[ix, iy, iz, SOLID] += NpI * (self.m_p_s[s] * (self.vel_p_s[s] + self.C_p_s[s] @ dist) + dt * f_p_int)
+                    self.exist_Ix[ix], self.exist_Iy[iy], self.exist_Iz[iz] = EXIST, EXIST, EXIST
 
     @ti.func
     def p2g_FLUID(self, f : ti.int32) :
@@ -651,12 +687,39 @@ class addWater():
                     self.f_F[ix, iy, iz][0] += - self.m_p_f[f] / self.rho_p_f[f] * (self.sigma_p_f[f][0, 0] * dNpIdx[0] + self.sigma_p_f[f][0, 1] * dNpIdx[1] + self.sigma_p_f[f][0, 2] * dNpIdx[2])
                     self.f_F[ix, iy, iz][1] += - self.m_p_f[f] / self.rho_p_f[f] * (self.sigma_p_f[f][1, 0] * dNpIdx[0] + self.sigma_p_f[f][1, 1] * dNpIdx[1] + self.sigma_p_f[f][1, 2] * dNpIdx[2])
                     self.f_F[ix, iy, iz][2] += - self.m_p_f[f] / self.rho_p_f[f] * (self.sigma_p_f[f][2, 0] * dNpIdx[0] + self.sigma_p_f[f][2, 1] * dNpIdx[1] + self.sigma_p_f[f][2, 2] * dNpIdx[2])
+                    self.exist_Ix[ix], self.exist_Iy[iy], self.exist_Iz[iz] = EXIST, EXIST, EXIST
+
+
+    @ti.kernel
+    def set_domain_edge(self):
+        left, right = 0, nx - 1
+        front, back = 0, ny - 1
+        bottom, upper = 0, nz - 1
+        while self.exist_Ix[left + SEARCH] == 0 : left += SEARCH
+        while self.exist_Iy[front + SEARCH] == 0 : front += SEARCH
+        while self.exist_Iz[bottom + SEARCH] == 0 : bottom += SEARCH
+        while self.exist_Ix[right - SEARCH] == 0 : right -= SEARCH
+        while self.exist_Iy[back - SEARCH] == 0 : back -= SEARCH
+        while self.exist_Iz[upper - SEARCH] == 0 : upper -= SEARCH
+        self.domain_edge[0, 0], self.domain_edge[0, 1] = left, right
+        self.domain_edge[1, 0], self.domain_edge[1, 1] = front, back
+        self.domain_edge[2, 0], self.domain_edge[2, 1] = bottom, upper
+        
+        if left <= 1 or front <= 1 or bottom <= 1 or right >= nx - 2 or back >= ny - 2 or upper >= nz - 2 :
+            self.exist_edge[None] = EXIST 
 
     @ti.kernel
     def plus_p_I_by_contact(self):
-        for IxIyIz in range(nx*ny*nz):
-            iz, ixiy = IxIyIz // (nx*ny), IxIyIz % (nx*ny)
-            iy, ix = ixiy // nx, ixiy % nx
+        for ix, iy, iz in ti.ndrange(
+            (self.domain_edge[0, 0],self.domain_edge[0, 1]),
+            (self.domain_edge[1, 0],self.domain_edge[1, 1]),
+            (self.domain_edge[2, 0],self.domain_edge[2, 1])
+            ):
+
+        # for IxIyIz in range(nx*ny*nz):
+        #     iz, ixiy = IxIyIz // (nx*ny), IxIyIz % (nx*ny)
+        #     iy, ix = ixiy // nx, ixiy % nx
+
             if self.m_I[ix, iy, iz, SOLID] > 0.0 or self.m_I[ix, iy, iz, FLUID]  > 0.0:
                 p_I_F_tilde = self.p_I[ix, iy, iz, FLUID] + dt * self.f_F[ix, iy, iz]
                 p_I_S_tilde = self.p_I[ix, iy, iz, SOLID]
@@ -806,8 +869,39 @@ class addWater():
         for p in range(self.num_p_active[None]) :
             if p < self.num_p_s : 
                 self.pos_p_s[p] += self.d_pos_p_s[p]
+                if self.pos_p_s[p].x < BIG : self.divergence[None] == DIVERGENCE
             else : 
                 self.pos_p_f[p - self.num_p_s] += self.d_pos_p_f[p - self.num_p_s]
+                if self.pos_p_f[p - self.num_p_s].x < BIG : self.divergence[None] == DIVERGENCE
+
+    def clear(self) :
+        self.clear_grid()
+        self.exist_Ix.fill(0)
+        self.exist_Iy.fill(0)
+        self.exist_Iz.fill(0)
+        self.domain_edge.fill(0)
+
+    @ti.kernel
+    def clear_grid(self) :
+        for ix, iy, iz in ti.ndrange(
+            (self.domain_edge[0, 0],self.domain_edge[0, 1]),
+            (self.domain_edge[1, 0],self.domain_edge[1, 1]),
+            (self.domain_edge[2, 0],self.domain_edge[2, 1])
+            ):
+            self.m_I[ix, iy, iz, SOLID] = 0.0
+            self.m_I[ix, iy, iz, FLUID] = 0.0
+            self.p_I[ix, iy, iz, SOLID] = [0.0, 0.0, 0.0]
+            self.p_I[ix, iy, iz, FLUID] = [0.0, 0.0, 0.0]
+            self.f_F[ix, iy, iz] = [0.0, 0.0, 0.0]
+            self.norm_S[ix, iy, iz] = [0.0, 0.0, 0.0]
+
+
+    def whether_continue(self):
+        if self.exist_edge[None] == EXIST :
+            sys.exit("Error : Particles exist near the edge of the computational domain. Please extend the computational domain and restart the simulation.")
+
+        if self.divergence[None] == DIVERGENCE:
+            sys.exit("Error : The values diverged.")
                         
 #     @ti.kernel
 #     def plus_vel_pos_p_s(self):
@@ -845,18 +939,18 @@ class addWater():
                 if EXPORT:
                     self.export_Solid()
                     self.export_Fluid()
+                    if EXPORT_NUMPY :
+                        self.export_numpy()
                     self.output_times[None] += 1
                 
             with ti.Tape(self.StrainEnergy):
                 self.cal_StrainEnergy()
                 
-            self.m_I.fill(0)
-            self.p_I.fill(0)
-            self.f_F.fill(0)
-            self.norm_S.fill(0)
+            
                 
             self.cal_norm_S()
             self.p2g()
+            self.set_domain_edge()
             self.diri_norm_S()
             self.plus_p_I_by_contact()
             self.diri_p_I()
@@ -869,6 +963,9 @@ class addWater():
             self.cal_L_p()
             self.cal_rho_sigma_p()
             self.plus_pos_p()
+            self.clear()
+
+            self.whether_continue()
 
 
 
