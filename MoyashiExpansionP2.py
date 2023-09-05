@@ -5,6 +5,8 @@ import taichi as ti
 import datetime
 import os
 import pandas as pd
+import math
+import sys
 
 ti.init(arch=ti.cpu, default_fp=ti.f64)
 
@@ -12,7 +14,8 @@ USER = "Hashiguchi"
 USING_MACHINE = "PC"
 SCHEME = "FEM"
 ADD_INFO_LIST = False
-EXPORT = True
+EXPORT = False
+EXPORT_NUMPY = False
 FOLDER_NAME = "MoyashiExpansionP2"
 PRESS_TIME_CHANGE = "CONST"
 DEBUG = False
@@ -20,10 +23,14 @@ ATTENUATION = True
 DONE = 1
 PI = np.pi
 INVERSE_NORM = True
+NAN = math.nan
+BIG = 1.0e20
 
+EXIST = 1
+DIVERGENCE = 1
 FIX = 1
 PRESS_LABEL = 2
-alpha_press = 0.1
+alpha_press = 0.3
 
 if EXPORT:
     DATE = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
@@ -31,13 +38,17 @@ if EXPORT:
     os.makedirs(dir_export, exist_ok=True)
     os.makedirs(dir_export + "/" + "vtu", exist_ok=True)
 
+    if EXPORT_NUMPY :
+        dir_numpy = dir_export + "/" "numpy"
+        os.makedirs(dir_numpy, exist_ok=True)
+
 
 mesh_dir = "./mesh_file/"
 mesh_name_s = "MoyashiTransfinite2"
 msh_s = meshio.read(mesh_dir + mesh_name_s + ".msh")
 
 if USING_MACHINE == "PC" :
-    ti.init(arch=ti.gpu, default_fp=ti.f64)
+    ti.init(arch=ti.cpu, default_fp=ti.f64)
     mesh_dir = "./mesh_file/"
     if EXPORT :
         info_list_dir = "./Consequence/" + FOLDER_NAME
@@ -65,13 +76,14 @@ young_s, nu_s = 4e5, 0.3
 la, mu = young_s * nu_s / ((1 + nu_s) * (1 - 2*nu_s)) , young_s / (2 * (1 + nu_s))
 sound_s = ti.sqrt((la + 2 * mu) / rho_s)
 grav = 9.81
-gi = ti.Vector([0.0, -grav, 0.0])
+gi = ti.Vector([0.0, - grav, 0.0])
 Press = alpha_press * young_s
 
 max_number = 20000
 output_span = 100
 dt_max = 0.1 * dx_mesh / sound_s
 dt = 0.000215
+# dt = 0.0215
 
 print("dt_max", dt_max)
 print("dt", dt)
@@ -116,6 +128,8 @@ class Expansion():
         self.pos_p_rest.from_numpy(msh_s.points)
         self.tN_pN_arr.from_numpy(msh_s.cells_dict[self.ELE])
         self.esN_pN_arr.from_numpy(msh_s.cells_dict[self.SUR])
+
+        self.divergence = ti.field(dtype=ti.i32, shape=())
 
         
         self.get_es_press()
@@ -340,11 +354,12 @@ class Expansion():
             s.to_csv(export_dir + "Information", header=False)
 
     def export_program(self):
-        with open(__file__, mode="r", encoding="utf-8") as fr:
-            prog = fr.read()
-        with open(export_dir + "/program.txt", mode="w") as fw:
-            fw.write(prog)
-            fw.flush()
+        if EXPORT:
+            with open(__file__, mode="r", encoding="utf-8") as fr:
+                prog = fr.read()
+            with open(export_dir + "/program.txt", mode="w") as fw:
+                fw.write(prog)
+                fw.flush()
 
     def export_Solid(self):
         cells = [
@@ -363,6 +378,15 @@ class Expansion():
             }
         )
         mesh_.write(dir_export + "/" + "vtu" + "/" + "SOLID{:05d}.vtu".format(self.output_times[None]))
+
+    def export_numpy(self) :
+        if EXPORT_NUMPY :
+            pos_p_np = self.pos_p.to_numpy()
+            np.save(dir_numpy + "/" + "pos_p{:05d}".format(self.output_times[None]) , pos_p_np)
+            if np.any(pos_p_np == NAN) :
+                print("ERROR")
+
+
 
     @ti.kernel
     def cal_StrainEnergy(self):
@@ -457,6 +481,11 @@ class Expansion():
                 f_p_init = - self.pos_p.grad[p]
                 self.vel_p[p] = (1 - beta) / (1 + beta) * self.vel_p[p] + dt * (self.f_p_ext[p] + f_p_init) / (self.m_p[p] * (1 + beta))
                 self.pos_p[p] = self.pos_p[p] + dt * self.vel_p[p]
+                # if self.pos_p[p].x == float('nan') :
+                if  not(self.pos_p[p].x < BIG) :
+                # if  False :
+                    self.divergence[None] = DIVERGENCE
+                    
                 
         else :
             for p in range(self.num_p):
@@ -464,6 +493,16 @@ class Expansion():
                 f_p_init = - self.pos_p.grad[p]
                 self.vel_p[p] += dt * (self.f_p_ext[p] + f_p_init) / self.m_p[p]
                 self.pos_p[p] += dt * self.vel_p[p]
+
+    def whether_continue(self) :
+        # pass
+        # pos_p_np = self.pos_p.to_numpy()
+        # divergence = not(np.all(pos_p_np < BIG))
+        # if divergence :
+        #     sys.exit("Error : The values diverged.")
+
+        if self.divergence[None] == DIVERGENCE :
+            sys.exit("Error : The values diverged.")
 
 
     def main(self):
@@ -479,8 +518,11 @@ class Expansion():
 
             if time_step % output_span == 0 :
                 print(time_step)
+                print(self.pos_p)
+                self.whether_continue()
                 if EXPORT : 
                     self.export_Solid()
+                    self.export_numpy()
                     self.output_times[None] += 1
 
 
