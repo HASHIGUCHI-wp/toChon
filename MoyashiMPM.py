@@ -14,7 +14,7 @@ ti.init(arch=ti.cpu, default_fp=ti.f64)
 RESTART = False
 CHANGE_PARAMETER = True
 USER = "Hashiguchi"
-USING_MACHINE = "PC"
+USING_MACHINE = "CERVO"
 SCHEME = "MPM"
 ADD_INFO_LIST = False
 EXPORT = True
@@ -145,12 +145,9 @@ else :
 
 
 
-mesh_dir = "./mesh_file/"
 
 
-msh_s = meshio.read(mesh_dir + mesh_name_s + ".msh")
-msh_f_init = meshio.read(mesh_dir + mesh_name_f_init + ".msh")
-msh_f_add = meshio.read(mesh_dir + mesh_name_f_add + ".msh")
+
 
 
 if USING_MACHINE == "PC" :
@@ -161,6 +158,15 @@ if USING_MACHINE == "PC" :
         os.makedirs(dir_vtu, exist_ok=True)
         if EXPORT_NUMPY :
             os.makedirs(dir_numpy,  exist_ok=True)
+            
+elif USING_MACHINE == "CERVO" :
+    ti.init(arch=ti.gpu, default_fp=ti.f64)
+    mesh_dir = "./mesh_file/Moyashi/"
+    if EXPORT :
+        os.makedirs(dir_export, exist_ok=True)
+        os.makedirs(dir_vtu, exist_ok=True)
+        if EXPORT_NUMPY :
+            os.makedirs(dir_numpy, exist_ok=True)
         
 elif USING_MACHINE == "ATLAS":
     ti.init(arch=ti.gpu, default_fp=ti.f64, device_memory_fraction=0.9)
@@ -170,6 +176,11 @@ elif USING_MACHINE == "ATLAS":
         export_dir = '/home/hashiguchi/mpm_simulation/result/' + FOLDER_NAME + "/" + DATE + "/"
         os.makedirs(export_dir, exist_ok=True)
         os.makedirs(export_dir + "vtu" + "/",  exist_ok=True)
+        
+
+msh_s = meshio.read(mesh_dir + mesh_name_s + ".msh")
+msh_f_init = meshio.read(mesh_dir + mesh_name_f_init + ".msh")
+msh_f_add = meshio.read(mesh_dir + mesh_name_f_add + ".msh")
 
 
 dim = 3
