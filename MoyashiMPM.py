@@ -7,10 +7,12 @@ import os
 import pandas as pd
 from pyevtk.hl import *
 import sys
+from Solid_P2Q import Solid_P2Q
 
 ti.init(arch=ti.cpu, default_fp=ti.f64)
 
-RESTART = True
+RESTART = False
+CHANGE_PARAMETER = True
 USER = "Hashiguchi"
 USING_MACHINE = "PC"
 SCHEME = "MPM"
@@ -19,12 +21,10 @@ EXPORT = True
 EXPORT_NUMPY = True
 FOLDER_NAME = "MoyashiAddWaterP2"
 DEBUG = False
-ATTENUATION = False
 PI = np.pi
 INVERSE_NORM = False
-ELEMENT_SOLID = "P2Q"
-ELEMENT_FLUID = "P1Q"
-SLIP = True
+# ELEMENT_SOLID = "P2Q"
+# ELEMENT_FLUID = "P1Q"
 
 SOLID = 0
 FLUID = 1
@@ -38,21 +38,115 @@ BIG = 1.0e20
 EXIST = 1
 DIVERGENCE = 1
 
-if EXPORT:
-    DATE = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
+LOC_PRE = 1
+
+length_s, width_s, height_s = 18.0, 12.0, 63.0
+length_f_add, width_f_add, height_f_add = 4.5, 6.0, 6.0
+
+DATE = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
+
+if RESTART :
+    DATE_PRE = "2023_09_05_12_55_06"
+    OUTPUT_TIMES = 107
+    dir_pre = "./consequence" + "/" + FOLDER_NAME + "/" + DATE_PRE
+    dir_numpy_pre = dir_pre + "/" + "numpy"
+    dir_export = dir_pre + "/" + DATE
+    dir_vtu = dir_export + "/" + "vtu"
+    dir_numpy = dir_export + "/" + "numpy"
+    dir_pre_info = "./consequence" + "/" + FOLDER_NAME + "/" + DATE_PRE + "/"
+    pre_info = pd.read_csv(dir_pre_info + "/" + "Information", index_col=0, header=None)
+
+    mesh_name_s = pre_info.loc["mesh_name_s"][LOC_PRE]
+    mesh_name_f_init = pre_info.loc["mesh_name_f_init"][LOC_PRE]
+    mesh_name_f_add = pre_info.loc["mesh_name_f_add"][LOC_PRE]
+
+    ATTENUATION = bool(pre_info.loc["Attenuation"][LOC_PRE])
+    SLIP = bool(pre_info.loc["Slip"][LOC_PRE])
+
+    rho_s = float(pre_info.loc["rho_s"][LOC_PRE])
+    young_s = float(pre_info.loc["young_s"][LOC_PRE])
+    nu_s = float(pre_info.loc["nu_s"][LOC_PRE])
+    rho_f = float(pre_info.loc["rho_f"][LOC_PRE])
+    mu_f = float(pre_info.loc["mu_f"][LOC_PRE])
+    # gamma_f = float(pre_info.loc["gamma_f"][LOC_PRE])
+    gamma_f = 7.0
+    kappa_f = float(pre_info.loc["kappa_f"][LOC_PRE])
+
+    dt = float(pre_info.loc["dt"][LOC_PRE])
+    dx = float(pre_info.loc["dx"][LOC_PRE])
+    dx_mesh = 0.75
+    num_add = int(pre_info.loc["num_add"][LOC_PRE])
+    vel_add = float(pre_info.loc["vel_add"][LOC_PRE])
+    add_span_time_step = int(pre_info.loc["add_span_time_step"][LOC_PRE])
+    max_number = int(pre_info.loc["max_number"][LOC_PRE])
+    output_span = int(pre_info.loc["output_span"][LOC_PRE])
+
+    area_start = ti.Vector([
+        float(pre_info.loc["area_start_x"][LOC_PRE]),
+        float(pre_info.loc["area_start_y"][LOC_PRE]),
+        float(pre_info.loc["area_start_z"][LOC_PRE])
+    ])
+    area_end = ti.Vector([
+        float(pre_info.loc["area_end_x"][LOC_PRE]),
+        float(pre_info.loc["area_end_y"][LOC_PRE]),
+        float(pre_info.loc["area_end_z"][LOC_PRE])
+    ])
+    diri_area_start = [
+        float(pre_info.loc["diri_area_start_x"][LOC_PRE]),
+        float(pre_info.loc["diri_area_start_y"][LOC_PRE]),
+        float(pre_info.loc["diri_area_start_z"][LOC_PRE]),
+    ]
+    diri_area_end = [
+        float(pre_info.loc["diri_area_end_x"][LOC_PRE]),
+        float(pre_info.loc["diri_area_end_y"][LOC_PRE]),
+        float(pre_info.loc["diri_area_end_z"][LOC_PRE]),
+    ]
+
+    if CHANGE_PARAMETER :
+        area_start = ti.Vector([-10., -10., -10.])
+        area_end = ti.Vector([45.0, 25.0, 73.0])
+
+
+
+else :
     dir_export = "./consequence" + "/" + FOLDER_NAME + "/" + DATE + "/"
     dir_vtu = dir_export + "/" + "vtu"
-    os.makedirs(dir_export, exist_ok=True)
-    os.makedirs(dir_vtu, exist_ok=True)
-    if EXPORT_NUMPY :
-        dir_numpy = dir_export + "/" + "numpy"
-        os.makedirs(dir_numpy, exist_ok=True)
+    dir_numpy = dir_export + "/" + "numpy"
+
+    mesh_name_s = "MoyashiTransfinite2"
+    mesh_name_f_init = "MoyashiWaterInit2"
+    mesh_name_f_add = "MoyashiWaterAdd2"
+
+    ATTENUATION = False
+    SLIP = True
+
+
+    dx_mesh = 0.75
+    rho_s = 4e1
+    young_s, nu_s = 4e5, 0.3
+    rho_f = 0.9975e3
+    mu_f = 1.002e-3
+    gamma_f = 7.0     ## water
+    kappa_f = 2.0e6
+    dt = 0.000215
+
+    num_add = 20
+    vel_add = 10.0
+    add_span_time = height_f_add / np.abs(vel_add)
+    add_span_time_step = int(add_span_time // dt) + 1
+    max_number = add_span_time_step * num_add
+    output_span = max_number // 1000
+
+    dx = dx_mesh
+    area_start = ti.Vector([-5.0, -5.0, -5.0])
+    area_end = ti.Vector([30.0, 17.0, 73.0])
+    diri_area_start = [0.0, 0.0, 63.0]
+    diri_area_end = [18.0, 12.0, 63.0]
+
 
 
 mesh_dir = "./mesh_file/"
-mesh_name_s = "MoyashiTransfinite2"
-mesh_name_f_init = "MoyashiWaterInit2"
-mesh_name_f_add = "MoyashiWaterAdd2"
+
 
 msh_s = meshio.read(mesh_dir + mesh_name_s + ".msh")
 msh_f_init = meshio.read(mesh_dir + mesh_name_f_init + ".msh")
@@ -63,10 +157,10 @@ if USING_MACHINE == "PC" :
     ti.init(arch=ti.cpu, default_fp=ti.f64)
     mesh_dir = "./mesh_file/"
     if EXPORT :
-        info_list_dir = "./Consequence/" + FOLDER_NAME
-        export_dir = "./Consequence/" + FOLDER_NAME + "/" + DATE + "/"
-        os.makedirs(export_dir, exist_ok=True)
-        os.makedirs(export_dir + "vtu" + "/",  exist_ok=True)
+        os.makedirs(dir_export, exist_ok=True)
+        os.makedirs(dir_vtu, exist_ok=True)
+        if EXPORT_NUMPY :
+            os.makedirs(dir_numpy,  exist_ok=True)
         
 elif USING_MACHINE == "ATLAS":
     ti.init(arch=ti.gpu, default_fp=ti.f64, device_memory_fraction=0.9)
@@ -81,106 +175,61 @@ elif USING_MACHINE == "ATLAS":
 dim = 3
 nip = 3
 err = 1.0e-5
-rho_s = 4e1
-dx_mesh = 0.75
-Z_FIX = 63.0
 num_type = 2
-
-young_s, nu_s = 4e5, 0.3
 la_s, mu_s = young_s * nu_s / ((1 + nu_s) * (1 - 2*nu_s)) , young_s / (2 * (1 + nu_s))
 sound_s = ti.sqrt((la_s + 2 * mu_s) / rho_s)
-grav = 9.81
+grav = 0.0
 gi = ti.Vector([0.0, 0.0, 0.0])
-length_s, width_s, height_s = 18.0, 12.0, 63.0
 
-length_f_add, width_f_add, height_f_add = 4.5, 6.0, 6.0
-rho_f = 0.9975e3
-mu_f = 1.002e-3
+
 lambda_f = 2/3 * mu_f
-gamma_f = 7.0     ## water
-kappa_f = 2.0e6
 sound_f = np.sqrt(kappa_f / rho_f)
 
 sound_max = sound_f if sound_f > sound_s else sound_s
 dt_max = 0.1 * dx_mesh / sound_s
-dt = 0.000215
 
-num_add = 20
-vel_add = 10.0
-vel_add_vec = ti.Vector([0.0, 0.0, -vel_add])
-add_span_time = height_f_add / np.abs(vel_add)
-add_span_time_step = int(add_span_time // dt) + 1
 
-dx = dx_mesh
+vel_add_vec = ti.Vector([0.0, 0.0, - vel_add])
+
 inv_dx = 1 / dx
-area_start = ti.Vector([-5.0, -5.0, -5.0])
-area_end = ti.Vector([30.0, 17.0, 73.0])
+
 box_size = area_end - area_start
 nx, ny, nz = int(box_size.x * inv_dx + 1), int(box_size.y * inv_dx + 1), int(box_size.z * inv_dx + 1)
-diri_area_start = [0.0, 0.0, 63.0]
-diri_area_end = [18.0, 12.0, 63.0]
 prepare_point = -1000
 
-
-max_number = add_span_time_step * num_add
-output_span = max_number // 1000
 
 print("dt_max", dt_max)
 print("dt", dt)
 
-if DEBUG :
-    print(msh_f_init)
-    # print(msh_s)
-    # print("num_p_s", msh_s.points.shape[0])
-    # print("num_es", msh_s.cells_dict["quad9"].shape[0])
-    # print("num_t", msh_s.cells_dict["hexahedron27"].shape[0])
-    # print("interval")
-    # print(msh_s.cell_data['gmsh:physical'][0].shape)
-    # print(np.array(msh_s.cell_data['gmsh:physical'])[2].shape)
-
-    # for es in range(msh_s.cells_dict["quad9"].shape[0]) :
-    #     print(msh_s.cell_data['gmsh:physical'][0][es])
-
 
 @ti.data_oriented
-class addWater():
+class addWater(Solid_P2Q):
     def __init__(self) -> None:
+        super().__init__(
+            msh_s = msh_s,
+            rho_s = rho_s,
+            young_s = young_s,
+            nu_s = nu_s,
+            la_s = la_s,
+            mu_s = mu_s,
+            dt = dt,
+            nip = nip,
+            gi = ti.Vector([0.0, 0.0, 0.0])
+        )
         self.time_steps = ti.field(dtype=ti.i32, shape=())
         self.output_times = ti.field(dtype=ti.i32, shape=())
         self.add_times = ti.field(dtype=ti.i32, shape=())
-        self.ELE_s, self.SUR_s = "hexahedron27", "quad9"
         self.ELE_f, self.SUR_f = "hexahedron", "quad"
 
-        self.num_p_s = msh_s.points.shape[0]
         self.num_p_f_init = msh_f_init.cells_dict[self.ELE_f].shape[0]
         self.num_p_f_add = msh_f_add.cells_dict[self.ELE_f].shape[0]
         self.num_p_f = self.num_p_f_init + num_add * self.num_p_f_add
         self.num_p = self.num_p_s + self.num_p_f
-        self.num_t_s, self.num_node_ele_s = msh_s.cells_dict[self.ELE_s].shape
-        self.num_es_s, self.num_node_sur_s = msh_s.cells_dict[self.SUR_s].shape
         self.num_node_ele_f = msh_f_init.cells_dict[self.ELE_f].shape[1]
-        self.num_gauss_s = self.num_t_s * nip**dim
         self.num_p_active = ti.field(dtype=ti.i32, shape=())
-        self.num_p_active[None] = self.num_p_s + self.num_p_f_init + self.add_times[None] * self.num_p_f_add
 
-        self.m_p_s = ti.field(dtype=float, shape=self.num_p_s)
-        self.pos_p_s = ti.Vector.field(dim, dtype=float, shape=self.num_p_s, needs_grad=True)
-        self.pos_p_s_rest = ti.Vector.field(dim, dtype=float, shape=self.num_p_s)
-        self.vel_p_s = ti.Vector.field(dim, dtype=float, shape=self.num_p_s)
         self.d_pos_p_s = ti.Vector.field(dim, dtype=float, shape=self.num_p_s)
         self.C_p_s = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_s)
-        self.Ja_Ref_s = ti.Matrix.field(dim, dim, dtype=float, shape=(self.num_t_s * nip**dim))
-        self.tN_pN_s_arr_s = ti.field(dtype=ti.i32, shape=(self.num_t_s, self.num_node_ele_s))
-        self.tN_pN_s = ti.field(dtype=ti.i32, shape=(self.num_t_s, 3, 3, 3))
-        self.esN_pN_arr_s = ti.field(dtype=ti.i32, shape=(self.num_es_s, self.num_node_sur_s))
-        self.StrainEnergy = ti.field(dtype=float, shape=(), needs_grad=True)
-        self.alpha_Dum = ti.field(dtype=float, shape=())
-        self.pN_fix = ti.field(dtype=ti.i32, shape=self.num_p_s)
-
-        self.pos_p_s.from_numpy(msh_s.points)
-        self.pos_p_s_rest.from_numpy(msh_s.points)
-        self.tN_pN_s_arr_s.from_numpy(msh_s.cells_dict[self.ELE_s])
-        self.esN_pN_arr_s.from_numpy(msh_s.cells_dict[self.SUR_s])
 
         self.m_p_f = ti.field(dtype=float, shape=self.num_p_f)
         self.rho_p_f = ti.field(dtype=float, shape=self.num_p_f)
@@ -190,7 +239,6 @@ class addWater():
         self.vel_p_f = ti.Vector.field(dim, dtype=float, shape=self.num_p_f)
         self.C_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
         self.sigma_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
-        # self.epsilon_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
         self.L_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
 
         self.m_I = ti.field(dtype=float, shape=(nx, ny, nz, num_type))
@@ -209,11 +257,13 @@ class addWater():
         self.exist_edge = ti.field(dtype=ti.i32, shape=())
         self.divergence = ti.field(dtype=ti.i32, shape=())
 
+        self.set_init_restart()
         self.set_f_add()
         self.set_f_init()
+        self.set_s_init()
         self.get_diri_I()
         self.get_add_I()
-        self.get_es_press()
+        self.get_es_press(msh_s)
         self.set_esN_pN_press()
         self.leg_weights_roots(nip)
         self.set_tN_pN_s()
@@ -223,11 +273,14 @@ class addWater():
         self.export_program()
         self.export_calculation_domain()
 
-        # self.pos_gauss_press = ti.Vector.field(dim, dtype=float, shape=self.num_gauss_s_press)
-        # self.norm_gauss_press = ti.Vector.field(dim, dtype=float, shape=self.num_gauss_s_press)
 
-        # self.cal_pos_gauss_press()
-        # self.export_pos_gauss_press()
+    def set_init_restart(self) :
+        if RESTART :
+            self.add_times[None] = int(np.load(dir_numpy_pre + "/" + "add_times_{:05d}.npy".format(OUTPUT_TIMES)))
+            self.output_times[None] = OUTPUT_TIMES
+            self.time_steps[None] = self.output_times[None] * output_span
+        self.num_p_active[None] = self.num_p_s + self.num_p_f_init + self.add_times[None] * self.num_p_f_add
+
 
     def set_f_add(self):
         pos_f_add_np = np.zeros((self.num_p_f_add, dim), dtype=np.float64)
@@ -243,23 +296,63 @@ class addWater():
             print(self.pos_p_f_add)
 
     def set_f_init(self):
-        pos_p_f_np = np.zeros((self.num_p_f, dim), dtype=np.float64)
-        for _f in range(self.num_node_ele_f) :
-            f_arr = msh_f_init.cells_dict[self.ELE_f][:, _f]
-            pos_p_f_np[:self.num_p_f_init] += msh_f_init.points[f_arr, :]
-        pos_p_f_np /= self.num_node_ele_f
-        pos_p_f_np[self.num_p_f_init:, :] = prepare_point
-        self.pos_p_f.from_numpy(pos_p_f_np)
+        if RESTART : 
+            num_active_f = np.load(dir_numpy_pre + "/" + "pos_p_f_{:05d}.npy".format(OUTPUT_TIMES)).shape[0]
 
-        print(self.pos_p_f)
+            pos_p_f_np = np.zeros((self.num_p_f, dim), dtype=np.float32)
+            vel_p_f_np = np.zeros((self.num_p_f, dim), dtype=np.float32)
+            C_p_f_np = np.zeros((self.num_p_f, dim, dim), dtype=np.float32)
+            sigma_p_f_np = np.zeros((self.num_p_f, dim, dim), dtype=np.float32)
+            P_p_f_np = np.zeros((self.num_p_f), dtype=np.float32)
+            m_p_f_np = np.zeros((self.num_p_f), dtype=np.float32)
+            rho_p_f_np = np.zeros((self.num_p_f), dtype=np.float32)
 
-        rho_p_f_np = np.zeros((self.num_p_f), dtype=np.float64)
-        rho_p_f_np[:self.num_p_f_init] = rho_f 
-        self.rho_p_f.from_numpy(rho_p_f_np)
+            pos_p_f_np[:num_active_f] = np.load(dir_numpy_pre + "/" + "pos_p_f_{:05d}.npy".format(OUTPUT_TIMES))
+            vel_p_f_np[:num_active_f] = np.load(dir_numpy_pre + "/" + "vel_p_f_{:05d}.npy".format(OUTPUT_TIMES))
+            C_p_f_np[:num_active_f] = np.load(dir_numpy_pre + "/" + "C_p_f_{:05d}.npy".format(OUTPUT_TIMES))
+            sigma_p_f_np[:num_active_f] = np.load(dir_numpy_pre + "/" + "sigma_p_f_{:05d}.npy".format(OUTPUT_TIMES))
+            P_p_f_np[:num_active_f] = np.load(dir_numpy_pre + "/" + "P_p_f_{:05d}.npy".format(OUTPUT_TIMES))
+            m_p_f_np[:num_active_f] = np.load(dir_numpy_pre + "/" + "m_p_f_{:05d}.npy".format(OUTPUT_TIMES))
+            rho_p_f_np[:num_active_f] = np.load(dir_numpy_pre + "/" + "rho_p_f_{:05d}.npy".format(OUTPUT_TIMES))
 
-        m_p_f_np = np.zeros((self.num_p_f), dtype=np.float64)
-        m_p_f_np[:self.num_p_f_init] = rho_f * (dx_mesh / 2)**dim
-        self.m_p_f.from_numpy(m_p_f_np)
+
+            self.pos_p_f.from_numpy(pos_p_f_np)
+            self.vel_p_f.from_numpy(vel_p_f_np)
+            self.C_p_f.from_numpy(C_p_f_np)
+            self.sigma_p_f.from_numpy(sigma_p_f_np)
+            self.P_p_f.from_numpy(P_p_f_np)
+            self.m_p_f.from_numpy(m_p_f_np)
+            self.rho_p_f.from_numpy(rho_p_f_np)
+
+        else : 
+            pos_p_f_np = np.zeros((self.num_p_f, dim), dtype=np.float64)
+            for _f in range(self.num_node_ele_f) :
+                f_arr = msh_f_init.cells_dict[self.ELE_f][:, _f]
+                pos_p_f_np[:self.num_p_f_init] += msh_f_init.points[f_arr, :]
+            pos_p_f_np /= self.num_node_ele_f
+            pos_p_f_np[self.num_p_f_init:, :] = prepare_point
+            self.pos_p_f.from_numpy(pos_p_f_np)
+
+            rho_p_f_np = np.zeros((self.num_p_f), dtype=np.float64)
+            rho_p_f_np[:self.num_p_f_init] = rho_f 
+            self.rho_p_f.from_numpy(rho_p_f_np)
+
+            m_p_f_np = np.zeros((self.num_p_f), dtype=np.float64)
+            m_p_f_np[:self.num_p_f_init] = rho_f * (dx_mesh / 2)**dim
+            self.m_p_f.from_numpy(m_p_f_np)
+
+    def set_s_init(self):
+        if RESTART :
+            self.pos_p_s.from_numpy(np.load(dir_numpy_pre + "/" + "pos_p_s_{:05d}.npy".format(OUTPUT_TIMES)))
+            self.vel_p_s.from_numpy(np.load(dir_numpy_pre + "/" + "vel_p_s_{:05d}.npy".format(OUTPUT_TIMES)))
+            self.C_p_s.from_numpy(np.load(dir_numpy_pre + "/" + "C_p_s_{:05d}.npy".format(OUTPUT_TIMES)))
+        else :
+            self.pos_p_s.from_numpy(msh_s.points)
+
+        self.pos_p_s_rest.from_numpy(msh_s.points)
+        self.tN_pN_arr_s.from_numpy(msh_s.cells_dict[self.ELE_s])
+        self.esN_pN_arr_s.from_numpy(msh_s.cells_dict[self.SUR_s])
+        
 
     @ti.kernel
     def add_f(self):
@@ -320,128 +413,11 @@ class addWater():
 
 
     
-    def get_es_press(self) :
-        es_press_np = np.arange(0, self.num_es_s)[msh_s.cell_data['gmsh:physical'][0] == PRESS_LABEL]
-        self.num_es_s_press = es_press_np.shape[0]
-        self.num_gauss_s_press = self.num_es_s_press * nip**2
-        self.es_press = ti.field(dtype=ti.i32, shape=self.num_es_s_press)
-        self.es_press.from_numpy(es_press_np)
-        self.esN_pN_press = ti.field(dtype=ti.i32, shape=(self.num_es_s_press, 3, 3))
-
-    @ti.kernel
-    def set_esN_pN_press(self):
-        for _es in range(self.num_es_s_press):
-            es = self.es_press[_es]
-            self.esN_pN_press[_es, 0, 0] = self.esN_pN_arr_s[es, 0]
-            self.esN_pN_press[_es, 2, 0] = self.esN_pN_arr_s[es, 1]
-            self.esN_pN_press[_es, 2, 2] = self.esN_pN_arr_s[es, 2]
-            self.esN_pN_press[_es, 0, 2] = self.esN_pN_arr_s[es, 3]
-            self.esN_pN_press[_es, 1, 0] = self.esN_pN_arr_s[es, 4]
-            self.esN_pN_press[_es, 2, 1] = self.esN_pN_arr_s[es, 5]
-            self.esN_pN_press[_es, 1, 2] = self.esN_pN_arr_s[es, 6]
-            self.esN_pN_press[_es, 0, 1] = self.esN_pN_arr_s[es, 7]
-            self.esN_pN_press[_es, 1, 1] = self.esN_pN_arr_s[es, 8]
-
-
-
-
-    def leg_weights_roots(self, n):
-        self.gauss_x = ti.field(dtype=float, shape=nip)
-        self.gauss_w = ti.field(dtype=float, shape=nip)
-
-        self.v_Gauss = ti.field(dtype=float, shape=(3, nip))
-        self.dv_Gauss = ti.field(dtype=float, shape=(3, nip))
-
-        x = sy.Symbol('x')
-        roots = sy.Poly(sy.legendre(n, x)).all_roots()  # n次ルジャンドル多項式の根を求める
-        x_i = np.array([rt.evalf(20) for rt in roots], dtype=np.float64) 
-        w_i = np.array([(2*(1-rt**2)/(n*sy.legendre(n-1, rt))**2).evalf(20) for rt in roots], dtype=np.float64)
-        self.gauss_x.from_numpy(x_i)
-        self.gauss_w.from_numpy(w_i)
-        
-        for m in range(n):
-            self.v_Gauss[0, m] = 1 / 2 * self.gauss_x[m] * (self.gauss_x[m] - 1)
-            self.v_Gauss[1, m] = - (self.gauss_x[m] + 1) * (self.gauss_x[m] - 1)
-            self.v_Gauss[2, m] = 1 / 2 * (self.gauss_x[m] + 1) * self.gauss_x[m]
-
-            self.dv_Gauss[0, m] = self.gauss_x[m] - 1 / 2
-            self.dv_Gauss[1, m] = - 2 * self.gauss_x[m]
-            self.dv_Gauss[2, m] = self.gauss_x[m] + 1 / 2
-        
-    @ti.kernel
-    def set_tN_pN_s(self) :
-        for t in range(self.num_t_s):
-            # tN_pN_s_arr_s = msh_s.cells_dict['hexahedron27'][t]
-            self.tN_pN_s[t, 0, 2, 2] = self.tN_pN_s_arr_s[t,0]
-            self.tN_pN_s[t, 0, 0, 2] = self.tN_pN_s_arr_s[t,1]
-            self.tN_pN_s[t, 0, 0, 0] = self.tN_pN_s_arr_s[t,2]
-            self.tN_pN_s[t, 0, 2, 0] = self.tN_pN_s_arr_s[t,3]
-
-            self.tN_pN_s[t, 2, 2, 2] = self.tN_pN_s_arr_s[t,4]
-            self.tN_pN_s[t, 2, 0, 2] = self.tN_pN_s_arr_s[t,5]
-            self.tN_pN_s[t, 2, 0, 0] = self.tN_pN_s_arr_s[t,6]
-            self.tN_pN_s[t, 2, 2, 0] = self.tN_pN_s_arr_s[t,7]
-
-            self.tN_pN_s[t, 0, 1, 2] = self.tN_pN_s_arr_s[t,8]
-            self.tN_pN_s[t, 0, 0, 1] = self.tN_pN_s_arr_s[t,9]
-            self.tN_pN_s[t, 0, 1, 0] = self.tN_pN_s_arr_s[t,10]
-            self.tN_pN_s[t, 0, 2, 1] = self.tN_pN_s_arr_s[t,11]
-
-            self.tN_pN_s[t, 2, 1, 2] = self.tN_pN_s_arr_s[t,12]
-            self.tN_pN_s[t, 2, 0, 1] = self.tN_pN_s_arr_s[t,13]
-            self.tN_pN_s[t, 2, 1, 0] = self.tN_pN_s_arr_s[t,14]
-            self.tN_pN_s[t, 2, 2, 1] = self.tN_pN_s_arr_s[t,15]
-
-            self.tN_pN_s[t, 1, 2, 2] = self.tN_pN_s_arr_s[t,16]
-            self.tN_pN_s[t, 1, 0, 2] = self.tN_pN_s_arr_s[t,17]
-            self.tN_pN_s[t, 1, 0, 0] = self.tN_pN_s_arr_s[t,18]
-            self.tN_pN_s[t, 1, 2, 0] = self.tN_pN_s_arr_s[t,19]
-
-            self.tN_pN_s[t, 1, 2, 1] = self.tN_pN_s_arr_s[t,20]
-            self.tN_pN_s[t, 1, 0, 1] = self.tN_pN_s_arr_s[t,21]
-            self.tN_pN_s[t, 1, 1, 2] = self.tN_pN_s_arr_s[t,22]
-            self.tN_pN_s[t, 1, 1, 0] = self.tN_pN_s_arr_s[t,23]
-
-            self.tN_pN_s[t, 0, 1, 1] = self.tN_pN_s_arr_s[t,24]
-            self.tN_pN_s[t, 2, 1, 1] = self.tN_pN_s_arr_s[t,25]
-            self.tN_pN_s[t, 1, 1, 1] = self.tN_pN_s_arr_s[t,26]
-
-
-    @ti.kernel
-    def cal_Ja_Ref_s(self):
-        for g in range(self.num_gauss_s):
-            t, mnl = g // (nip**3), g % (nip**3)
-            m, nl = mnl // (nip**2), mnl % (nip**2)
-            n, l  = nl // nip, nl % nip
-            for _a1 in ti.static(range(3)):
-                for _a2 in ti.static(range(3)):
-                    for _a3 in ti.static(range(3)):
-                        a = self.tN_pN_s[t, _a1, _a2, _a3]
-                        for pd in ti.static(range(dim)):
-                            self.Ja_Ref_s[g][pd, 0] += self.dv_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.v_Gauss[_a3, l] * self.pos_p_s_rest[a][pd]
-                            self.Ja_Ref_s[g][pd, 1] += self.v_Gauss[_a1, m] * self.dv_Gauss[_a2, n] * self.v_Gauss[_a3, l] * self.pos_p_s_rest[a][pd]
-                            self.Ja_Ref_s[g][pd, 2] += self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.dv_Gauss[_a3, l] * self.pos_p_s_rest[a][pd]
-
-    @ti.kernel
-    def cal_m_p_s(self):
-        for g in range(self.num_gauss_s):
-            t, mnl = g // (nip**3), g % (nip**3)
-            m, nl = mnl // (nip**2), mnl % (nip**2)
-            n, l  = nl // nip, nl % nip
-            ja_ref_s = self.Ja_Ref_s[g]
-            det_ja_ref_s = ja_ref_s.determinant()
-            det_ja_ref_s = ti.abs(det_ja_ref_s)
-            for _a1 in ti.static(range(3)):
-                for _a2 in ti.static(range(3)):
-                    for _a3 in ti.static(range(3)):
-                        a = self.tN_pN_s[t, _a1, _a2, _a3]
-                        self.m_p_s[a] += rho_s * self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.v_Gauss[_a3, l] * self.gauss_w[m] * self.gauss_w[n] * self.gauss_w[l] * det_ja_ref_s
-
-    
     def export_info(self):
         if EXPORT:
             data = {
                 "date" : DATE ,
+                "dir_export" : dir_export,
                 "Scheme" : SCHEME,
                 "Slip" : SLIP,
                 "mesh_name_s" : mesh_name_s,
@@ -457,28 +433,45 @@ class addWater():
                 "element_f" : self.ELE_f,
                 "dt" : dt,
                 "dx" : dx,
+                "dx_mesh" : dx_mesh,
                 "area_start_x" : area_start.x,
                 "area_start_y" : area_start.y,
                 "area_start_z" : area_start.z,
                 "area_end_x" : area_end.x,
                 "area_end_y" : area_end.y,
                 "area_end_z" : area_end.z,
+                "diri_area_start_x" : diri_area_start[0],
+                "diri_area_start_y" : diri_area_start[1],
+                "diri_area_start_z" : diri_area_start[2],
+                "diri_area_end_x" : diri_area_end[0],
+                "diri_area_end_y" : diri_area_end[1],
+                "diri_area_end_z" : diri_area_end[2],
                 "young_s" : young_s,
                 "nu_s" : nu_s,
                 "rho_s" : rho_s,
                 "mu_f" : mu_f,
                 "lambda_f" : lambda_f,
                 "kappa_f" : kappa_f,
-                "rho_f" : rho_f
+                "rho_f" : rho_f,
+                "gamma_f" : gamma_f,
+                "nip" : nip,
+                "grav" : grav
             }
-                
+            
+            if RESTART :
+                data_restart = {
+                    "Restart"  : RESTART,
+                    "output_times_restart" : OUTPUT_TIMES
+                }
+                data.update(data_restart)    
+
             s = pd.Series(data)
-            s.to_csv(export_dir + "Information", header=False)
+            s.to_csv(dir_export + "/" + "Information", header=False)
 
     def export_program(self):
         with open(__file__, mode="r", encoding="utf-8") as fr:
             prog = fr.read()
-        with open(export_dir + "/program.txt", mode="w") as fw:
+        with open(dir_export + "/" + "program.txt", mode="w") as fw:
             fw.write(prog)
             fw.flush()
 
@@ -501,24 +494,6 @@ class addWater():
         )
 
 
-    def export_Solid(self):
-        cells = [
-            (self.ELE_s, msh_s.cells_dict[self.ELE_s])
-        ]
-        mesh_ = meshio.Mesh(
-            msh_s.points,
-            cells,
-            point_data = {
-                "displacememt" : self.pos_p_s.to_numpy() - msh_s.points
-            },
-            cell_data = {
-                # "sigma_max" : [sigma_max.to_numpy()],
-                # "sigma_mu" : [sigma_mu.to_numpy()],
-                # "U_ele" : [U_ele.to_numpy()]
-            }
-        )
-        mesh_.write(dir_export + "/" + "vtu" + "/" + "SOLID{:05d}.vtu".format(self.output_times[None]))
-
     def export_Fluid(self):
         num_f_end = self.num_p_f_init + self.add_times[None] * self.num_p_f_add
         pos_p_np = self.pos_p_f.to_numpy()[:num_f_end, :]
@@ -537,44 +512,22 @@ class addWater():
         np.save(dir_numpy + "/" + "vel_p_s_{:05d}".format(self.output_times[None]), self.vel_p_s.to_numpy())
         np.save(dir_numpy + "/" + "C_p_s_{:05d}".format(self.output_times[None]), self.C_p_s.to_numpy())
 
-        np.save(dir_numpy + "/" + "pos_p_f_{:05d}".format(self.output_times[None]), self.pos_p_f.to_numpy())
-        np.save(dir_numpy + "/" + "vel_p_f_{:05d}".format(self.output_times[None]), self.vel_p_f.to_numpy())
-        np.save(dir_numpy + "/" + "C_p_f_{:05d}".format(self.output_times[None]), self.C_p_f.to_numpy())
-        np.save(dir_numpy + "/" + "sigma_p_f_{:05d}".format(self.output_times[None]), self.sigma_p_f.to_numpy())
-        np.save(dir_numpy + "/" + "P_p_f_{:05d}".format(self.output_times[None]), self.P_p_f.to_numpy())
-        np.save(dir_numpy + "/" + "rho_p_f_{:05d}".format(self.output_times[None]), self.rho_p_f.to_numpy())
+        num_f_end = self.num_p_f_init + self.add_times[None] * self.num_p_f_add
+        np.save(dir_numpy + "/" + "pos_p_f_{:05d}".format(self.output_times[None]), self.pos_p_f.to_numpy()[:num_f_end])
+        np.save(dir_numpy + "/" + "vel_p_f_{:05d}".format(self.output_times[None]), self.vel_p_f.to_numpy()[:num_f_end])
+        np.save(dir_numpy + "/" + "C_p_f_{:05d}".format(self.output_times[None]), self.C_p_f.to_numpy()[:num_f_end])
+        np.save(dir_numpy + "/" + "sigma_p_f_{:05d}".format(self.output_times[None]), self.sigma_p_f.to_numpy()[:num_f_end])
+        np.save(dir_numpy + "/" + "P_p_f_{:05d}".format(self.output_times[None]), self.P_p_f.to_numpy()[:num_f_end])
+        np.save(dir_numpy + "/" + "rho_p_f_{:05d}".format(self.output_times[None]), self.rho_p_f.to_numpy()[:num_f_end])
+        np.save(dir_numpy + "/" + "m_p_f_{:05d}".format(self.output_times[None]), self.m_p_f.to_numpy()[:num_f_end])
 
-    @ti.kernel
-    def cal_StrainEnergy(self):
-        for g in range(self.num_gauss_s):
-            t, mnl = g // (nip**3), g % (nip**3)
-            m, nl = mnl // (nip**2), mnl % (nip**2)
-            n, l  = nl // nip, nl % nip
-            ja_ref_s = self.Ja_Ref_s[g]
-            det_ja_ref_s = ja_ref_s.determinant()
-            det_ja_ref_s = ti.abs(det_ja_ref_s)
-            inv_Ja_ref_s = ja_ref_s.inverse()
-            FiJ = ti.Matrix([[0.0,0.0,0.0], [0.0,0.0,0.0], [0.0,0.0,0.0]])
-            for _a1 in ti.static(range(3)):
-                for _a2 in ti.static(range(3)):
-                    for _a3 in ti.static(range(3)):
-                        a = self.tN_pN_s[t, _a1, _a2, _a3]
-                        dNadt = ti.Vector([
-                            self.dv_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.v_Gauss[_a3, l], 
-                            self.v_Gauss[_a1, m] * self.dv_Gauss[_a2, n] * self.v_Gauss[_a3, l],
-                            self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.dv_Gauss[_a3, l]
-                        ])
-                        dNadx = inv_Ja_ref_s @ dNadt
-                        FiJ += dNadx.outer_product(self.pos_p_s[a])
-            I1 = (FiJ @ FiJ.transpose()).trace()
-            J = FiJ.determinant()
-            element_energy = 0.5 * mu_s * (I1 - dim) - mu_s * ti.log(J) + 0.5 * la_s * ti.log(J)**2
-            self.StrainEnergy[None] += element_energy * self.gauss_w[m] * self.gauss_w[n] * self.gauss_w[l] * det_ja_ref_s
+        np.save(dir_numpy + "/" + "add_times_{:05d}".format(self.output_times[None]), self.add_times[None])
+
 
 
     @ti.kernel 
     def cal_norm_S(self):
-        for g in range(self.num_gauss_s_press):
+        for g in range(self.num_gauss_press):
             _es, mn = g // (nip**2), g % (nip**2)
             m, n = mn // nip, mn % nip
             k1, k2 = ti.Vector([0.0, 0.0, 0.0]), ti.Vector([0.0, 0.0, 0.0])
@@ -597,36 +550,7 @@ class addWater():
                         ix, iy, iz = base.x + i, base.y + j, base.z + k
                         self.norm_S[ix, iy, iz] += w[i].x * w[j].y * w[k].z * norm
 
-    @ti.kernel
-    def cal_pos_gauss_press(self): 
-        for g in range(self.num_gauss_s_press):
-            _es, mn = g // (nip**2), g % (nip**2)
-            m, n = mn // nip, mn % nip
-            k1, k2 = ti.Vector([0.0, 0.0, 0.0]), ti.Vector([0.0, 0.0, 0.0])
-            pos_a = ti.Vector([0.0, 0.0, 0.0])
-            for _a1 in ti.static(range(3)):
-                for _a2 in ti.static(range(3)):
-                    a = self.esN_pN_press[_es, _a1, _a2]
-                    pos_a += self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.pos_p_s[a]
-                    k1 += self.dv_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.pos_p_s[a]
-                    k2 += self.v_Gauss[_a1, m] * self.dv_Gauss[_a2, n] * self.pos_p_s[a]
-            k3 = k1.cross(k2)
-            norm = k3.normalized()
-            norm *= -1.0 if INVERSE_NORM else 1.0
-            self.pos_gauss_press[g] = pos_a
-            self.norm_gauss_press[g] = norm
 
-    def export_pos_gauss_press(self) :
-        pos_p_np = self.pos_gauss_press.to_numpy()
-        pointsToVTK(
-            dir_export + "/" + "vtu" + "/" + "pos_gauss_press".format(self.output_times[None]),
-            pos_p_np[:, 0].copy(),
-            pos_p_np[:, 1].copy(),
-            pos_p_np[:, 2].copy(),
-            data = {
-                "norm" : self.norm_gauss_press.to_numpy().copy()
-            }
-        )
 
     @ti.kernel
     def diri_norm_S(self):
@@ -923,21 +847,21 @@ class addWater():
 
     def main(self):
         print("roop start")
-        for time_step in range(max_number):
-            if time_step % 100 == 0:
-                print(time_step)
+        while self.time_steps[None] < max_number :
+            if self.time_steps[None] % 100 == 0:
+                print(self.time_steps[None])
             
-            if time_step % add_span_time_step == 0:
+            if self.time_steps[None] % add_span_time_step == 0:
                 if self.add_times[None] <= num_add:
                     self.add_f()
                     self.add_times[None] += 1
                     self.num_p_active[None] += self.num_p_f_add
                     
                     
-            if time_step % output_span == 0:
-                print(time_step)
+            if self.time_steps[None] % output_span == 0:
+                print(self.time_steps[None])
                 if EXPORT:
-                    self.export_Solid()
+                    self.export_Solid(msh_s, dir_vtu + "/" + "SOLID{:05d}.vtu".format(self.output_times[None]))
                     self.export_Fluid()
                     if EXPORT_NUMPY :
                         self.export_numpy()
@@ -966,6 +890,8 @@ class addWater():
             self.clear()
 
             self.whether_continue()
+
+            self.time_steps[None] += 1
 
 
 
