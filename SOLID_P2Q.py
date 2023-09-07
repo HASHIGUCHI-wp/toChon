@@ -117,7 +117,7 @@ class Solid_P2Q:
 
 
     @ti.kernel
-    def set_tN_pN(self) :
+    def set_tN_pN_s(self) :
         for t in range(self.num_t_s):
             # tN_pN_arr = msh_s.cells_dict['hexahedron27'][t]
             self.tN_pN_s[t, 0, 2, 2] = self.tN_pN_arr_s[t,0]
@@ -156,7 +156,7 @@ class Solid_P2Q:
 
 
     @ti.kernel
-    def cal_Ja_Ref(self):
+    def cal_Ja_Ref_s(self):
         for g in range(self.num_gauss):
             t, mnl = g // (self.nip**3), g % (self.nip**3)
             m, nl = mnl // (self.nip**2), mnl % (self.nip**2)
@@ -172,7 +172,7 @@ class Solid_P2Q:
 
     
     @ti.kernel
-    def cal_m_p(self):
+    def cal_m_p_s(self):
         for g in range(self.num_gauss):
             t, mnl = g // (self.nip**3), g % (self.nip**3)
             m, nl = mnl // (self.nip**2), mnl % (self.nip**2)
