@@ -8,8 +8,10 @@ import pandas as pd
 from pyevtk.hl import *
 import sys
 from Solid_P2Q import Solid_P2Q
+from Fluid_MPM import Fluid_MPM
+from Solid_MPM import Solid_MPM
 
-ti.init(arch=ti.cpu, default_fp=ti.f64)
+ti.init()
 
 RESTART = False
 CHANGE_PARAMETER = True
@@ -25,9 +27,6 @@ PI = np.pi
 INVERSE_NORM = False
 # ELEMENT_SOLID = "P2Q"
 # ELEMENT_FLUID = "P1Q"
-
-SOLID = 0
-FLUID = 1
 
 FIX = 1
 PRESS_LABEL = 2
@@ -75,6 +74,7 @@ if RESTART :
     dt = float(pre_info.loc["dt"][LOC_PRE])
     dx = float(pre_info.loc["dx"][LOC_PRE])
     dx_mesh = 0.75
+    dx_mesh_f = 0.75 / 2
     num_add = int(pre_info.loc["num_add"][LOC_PRE])
     vel_add = float(pre_info.loc["vel_add"][LOC_PRE])
     add_span_time_step = int(pre_info.loc["add_span_time_step"][LOC_PRE])
@@ -109,7 +109,7 @@ if RESTART :
 
 
 else :
-    dir_export = "./consequence" + "/" + FOLDER_NAME + "/" + DATE + "/"
+    dir_export = "./consequence" + "/" + FOLDER_NAME + "/" + DATE 
     dir_vtu = dir_export + "/" + "vtu"
     dir_numpy = dir_export + "/" + "numpy"
 
@@ -122,6 +122,7 @@ else :
 
 
     dx_mesh = 0.75
+    dx_mesh_f = 0.75 / 2
     rho_s = 4e1
     young_s, nu_s = 4e5, 0.3
     rho_f = 0.9975e3
@@ -138,8 +139,8 @@ else :
     output_span = max_number // 1000
 
     dx = dx_mesh
-    area_start = ti.Vector([-5.0, -5.0, -5.0])
-    area_end = ti.Vector([30.0, 17.0, 73.0])
+    area_start = ti.Vector([-10.0, -7.0, -40.0])
+    area_end = ti.Vector([30.0, 19.0, 73.0])
     diri_area_start = [0.0, 0.0, 63.0]
     diri_area_end = [18.0, 12.0, 63.0]
 
@@ -182,6 +183,9 @@ msh_s = meshio.read(mesh_dir + mesh_name_s + ".msh")
 msh_f_init = meshio.read(mesh_dir + mesh_name_f_init + ".msh")
 msh_f_add = meshio.read(mesh_dir + mesh_name_f_add + ".msh")
 
+ELE_s, SUR_s = "hexahedron27", "quad9"
+ELE_f, SUR_f = "hexahedron", "quad"
+
 
 dim = 3
 nip = 3
@@ -214,9 +218,23 @@ print("dt", dt)
 
 
 @ti.data_oriented
-class addWater(Solid_P2Q):
+class addWater(Solid_MPM, Fluid_MPM, Solid_P2Q):
     def __init__(self) -> None:
-        super().__init__(
+        self.time_steps = ti.field(dtype=ti.i32, shape=())
+        self.output_times = ti.field(dtype=ti.i32, shape=())
+        self.add_times = ti.field(dtype=ti.i32, shape=())
+        
+        self.ELE_f, self.SUR_f = ELE_f, SUR_f
+        self.num_p_s = msh_s.points.shape[0]
+        self.num_p_f_init = msh_f_init.cells_dict[self.ELE_f].shape[0]
+        self.num_p_f_add = msh_f_add.cells_dict[self.ELE_f].shape[0]
+        self.num_p_f_all = self.num_p_f_init + num_add * self.num_p_f_add
+        self.num_p_f_active = ti.field(dtype=ti.i32, shape=())
+        self.num_p = self.num_p_s + self.num_p_f_all
+        self.num_node_ele_f = msh_f_init.cells_dict[self.ELE_f].shape[1]
+        
+        
+        Solid_P2Q.__init__(self, 
             msh_s = msh_s,
             rho_s = rho_s,
             young_s = young_s,
@@ -225,37 +243,38 @@ class addWater(Solid_P2Q):
             mu_s = mu_s,
             dt = dt,
             nip = nip,
-            gi = ti.Vector([0.0, 0.0, 0.0])
+            gi = gi
         )
-        self.time_steps = ti.field(dtype=ti.i32, shape=())
-        self.output_times = ti.field(dtype=ti.i32, shape=())
-        self.add_times = ti.field(dtype=ti.i32, shape=())
-        self.ELE_f, self.SUR_f = "hexahedron", "quad"
+        Fluid_MPM.__init__(self,
+            dim = dim,
+            rho_f = rho_f,
+            mu_f = mu_f,
+            gamma_f = gamma_f,
+            kappa_f = kappa_f,
+            lambda_f = lambda_f,
+            dt = dt,
+            dx = dx,
+            nx = nx, 
+            ny = ny, 
+            nz = nz,
+            ELE_f = ELE_f,
+            area_start = area_start,
+            area_end = area_end,
+            gi = gi
+        )
+        Solid_MPM.__init__(self,
+            dt = dt,
+            num_p_s = self.num_p_s,
+            dx = dx,
+            nx = nx,
+            ny = ny,
+            nz = nz,
+            area_start = area_start,
+            area_end = area_end
+        )
+        
 
-        self.num_p_f_init = msh_f_init.cells_dict[self.ELE_f].shape[0]
-        self.num_p_f_add = msh_f_add.cells_dict[self.ELE_f].shape[0]
-        self.num_p_f = self.num_p_f_init + num_add * self.num_p_f_add
-        self.num_p = self.num_p_s + self.num_p_f
-        self.num_node_ele_f = msh_f_init.cells_dict[self.ELE_f].shape[1]
-        self.num_p_active = ti.field(dtype=ti.i32, shape=())
 
-        self.d_pos_p_s = ti.Vector.field(dim, dtype=float, shape=self.num_p_s)
-        self.C_p_s = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_s)
-
-        self.m_p_f = ti.field(dtype=float, shape=self.num_p_f)
-        self.rho_p_f = ti.field(dtype=float, shape=self.num_p_f)
-        self.P_p_f = ti.field(dtype=float, shape=self.num_p_f)
-        self.pos_p_f = ti.Vector.field(dim, dtype=float, shape=self.num_p_f)
-        self.d_pos_p_f = ti.Vector.field(dim, dtype=float, shape=self.num_p_f)
-        self.vel_p_f = ti.Vector.field(dim, dtype=float, shape=self.num_p_f)
-        self.C_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
-        self.sigma_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
-        self.L_p_f = ti.Matrix.field(dim, dim, dtype=float, shape=self.num_p_f)
-
-        self.m_I = ti.field(dtype=float, shape=(nx, ny, nz, num_type))
-        self.p_I = ti.Vector.field(dim, dtype=float, shape=(nx, ny, nz, num_type))
-        self.f_F = ti.Vector.field(dim, dtype=float, shape=(nx, ny, nz))
-        self.norm_S = ti.Vector.field(dim, dtype=float, shape=(nx, ny, nz))
         self.exist_Ix = ti.field(dtype=ti.i32, shape=nx)
         self.exist_Iy = ti.field(dtype=ti.i32, shape=ny)
         self.exist_Iz = ti.field(dtype=ti.i32, shape=nz)
@@ -268,12 +287,15 @@ class addWater(Solid_P2Q):
         self.exist_edge = ti.field(dtype=ti.i32, shape=())
         self.divergence = ti.field(dtype=ti.i32, shape=())
 
+        Solid_P2Q.set_taichi_field(self)
+        Solid_MPM.set_taichi_field(self)
+        Fluid_MPM.set_taichi_field(self, self.num_p_f_all)
         self.set_init_restart()
         self.set_f_add()
         self.set_f_init()
         self.set_s_init()
-        self.get_diri_I()
-        self.get_add_I()
+        self.get_S_fix()
+        self.get_F_add()
         self.get_es_press(msh_s)
         self.set_esN_pN_press()
         self.leg_weights_roots(nip)
@@ -290,7 +312,7 @@ class addWater(Solid_P2Q):
             self.add_times[None] = int(np.load(dir_numpy_pre + "/" + "add_times_{:05d}.npy".format(OUTPUT_TIMES)))
             self.output_times[None] = OUTPUT_TIMES
             self.time_steps[None] = self.output_times[None] * output_span
-        self.num_p_active[None] = self.num_p_s + self.num_p_f_init + self.add_times[None] * self.num_p_f_add
+        self.num_p_f_active[None] = self.num_p_f_init + self.add_times[None] * self.num_p_f_add
 
 
     def set_f_add(self):
@@ -300,7 +322,7 @@ class addWater(Solid_P2Q):
             pos_f_add_np += msh_f_add.points[f_arr, :]
         pos_f_add_np /= self.num_node_ele_f
         self.pos_p_f_add.from_numpy(pos_f_add_np)
-        self.m_p_f_add.fill(rho_f * (dx_mesh / 2)**dim)
+        self.m_p_f_add.fill(rho_f * (dx_mesh_f)**dim)
         self.rho_p_f_add.fill(rho_f)
 
         if DEBUG:
@@ -349,7 +371,7 @@ class addWater(Solid_P2Q):
             self.rho_p_f.from_numpy(rho_p_f_np)
 
             m_p_f_np = np.zeros((self.num_p_f), dtype=np.float64)
-            m_p_f_np[:self.num_p_f_init] = rho_f * (dx_mesh / 2)**dim
+            m_p_f_np[:self.num_p_f_init] = rho_f * (dx_mesh_f)**dim
             self.m_p_f.from_numpy(m_p_f_np)
 
     def set_s_init(self):
@@ -375,36 +397,36 @@ class addWater(Solid_P2Q):
 
 
 
-    def get_diri_I(self):
-        diri_ix_s = int((diri_area_start[0] - area_start[0]) * inv_dx - 0.5)
-        diri_iy_s = int((diri_area_start[1] - area_start[1]) * inv_dx - 0.5)
-        diri_iz_s = int((diri_area_start[2] - area_start[2]) * inv_dx - 0.5)
+    def get_S_fix(self):
+        S_fix_start_x = int((diri_area_start[0] - area_start[0]) * inv_dx - 0.5)
+        S_fix_start_y = int((diri_area_start[1] - area_start[1]) * inv_dx - 0.5)
+        S_fix_start_z = int((diri_area_start[2] - area_start[2]) * inv_dx - 0.5)
         
-        diri_ix_e = int((diri_area_end[0] - area_start[0]) * inv_dx - 0.5) + 2
-        diri_iy_e = int((diri_area_end[1] - area_start[1]) * inv_dx - 0.5) + 2
-        diri_iz_e = int((diri_area_end[2] - area_start[2]) * inv_dx - 0.5) + 2
+        S_fix_end_x = int((diri_area_end[0] - area_start[0]) * inv_dx - 0.5) + 2
+        S_fix_end_y = int((diri_area_end[1] - area_start[1]) * inv_dx - 0.5) + 2
+        S_fix_end_z = int((diri_area_end[2] - area_start[2]) * inv_dx - 0.5) + 2
         
-        nx_diri = diri_ix_e - diri_ix_s + 1
-        ny_diri = diri_iy_e - diri_iy_s + 1
-        nz_diri = diri_iz_e - diri_iz_s + 1
+        nx_fix = S_fix_end_x - S_fix_start_x + 1
+        ny_fix = S_fix_end_y - S_fix_start_y + 1
+        nz_fix = S_fix_end_z - S_fix_start_z + 1
         
-        diri_IxIyIz_np = np.zeros(0, dtype=np.int32)
-        for _Ix in range(nx_diri):
-            for _Iy in range(ny_diri):
-                for _Iz in range(nz_diri):
-                    Ix, Iy, Iz = _Ix + diri_ix_s, _Iy + diri_iy_s, _Iz + diri_iz_s
+        S_fix_np = np.zeros(0, dtype=np.int32)
+        for _Ix in range(nx_fix):
+            for _Iy in range(ny_fix):
+                for _Iz in range(nz_fix):
+                    Ix, Iy, Iz = _Ix + S_fix_start_x, _Iy + S_fix_start_y, _Iz + S_fix_start_z
                     IxIyIz = Iz * (nx * ny) + Iy * (nx) + Ix
-                    diri_IxIyIz_np = np.append(diri_IxIyIz_np, IxIyIz)
+                    S_fix_np = np.append(S_fix_np, IxIyIz)
         
-        diri_IxIyIz_np = np.unique(diri_IxIyIz_np)
-        self.num_diri_I = diri_IxIyIz_np.shape[0]
-        self.diri_I = ti.field(dtype=ti.i32, shape=self.num_diri_I)
-        self.diri_I.from_numpy(diri_IxIyIz_np)
-        print("num_diri_I", self.num_diri_I)
+        S_fix_np = np.unique(S_fix_np)
+        self.num_S_fix = S_fix_np.shape[0]
+        self.S_fix = ti.field(dtype=ti.i32, shape=self.num_S_fix)
+        self.S_fix.from_numpy(S_fix_np)
+        print("num_S_fix", self.num_S_fix)
 
     
-    def get_add_I(self):
-        add_IxIyIz_np = np.zeros(0, dtype=np.int32)
+    def get_F_add(self):
+        F_add_np = np.zeros(0, dtype=np.int32)
         for _p in range(msh_f_add.points.shape[0]):
             pos_p_this = msh_f_add.points[_p, :]
             base_x = int((pos_p_this[0] - area_start[0]) * inv_dx - 0.5)
@@ -415,12 +437,12 @@ class addWater(Solid_P2Q):
                     for k in range(3):
                         I_cand = [base_x + i, base_y + j, base_z + k]
                         IxIyIz = I_cand[2] * (nx * ny) + I_cand[1] * (nx) + I_cand[0]
-                        add_IxIyIz_np = np.append(add_IxIyIz_np, IxIyIz)
-        add_IxIyIz_np = np.unique(add_IxIyIz_np)
-        self.num_add_I = add_IxIyIz_np.shape[0]
-        self.add_I = ti.field(dtype=ti.i32, shape=self.num_add_I)
-        self.add_I.from_numpy(add_IxIyIz_np)        
-        print("num_add_I", self.num_add_I)
+                        F_add_np = np.append(F_add_np, IxIyIz)
+        F_add_np = np.unique(F_add_np)
+        self.num_F_add = F_add_np.shape[0]
+        self.F_add = ti.field(dtype=ti.i32, shape=self.num_F_add)
+        self.F_add.from_numpy(F_add_np)        
+        print("num_F_add", self.num_F_add)
 
 
     
@@ -431,6 +453,7 @@ class addWater(Solid_P2Q):
                 "dir_export" : dir_export,
                 "Scheme" : SCHEME,
                 "Slip" : SLIP,
+                "dim" : dim,
                 "mesh_name_s" : mesh_name_s,
                 "mesh_name_f_init" : mesh_name_f_init,
                 "mesh_name_f_add" : mesh_name_f_add,
@@ -442,9 +465,11 @@ class addWater(Solid_P2Q):
                 "vel_add" : vel_add,
                 "element_s" : self.ELE_s,
                 "element_f" : self.ELE_f,
+                "surface_s" : self.SUR_s,
                 "dt" : dt,
                 "dx" : dx,
                 "dx_mesh" : dx_mesh,
+                "dx_mesh_f" : dx_mesh_f,
                 "area_start_x" : area_start.x,
                 "area_start_y" : area_start.y,
                 "area_start_z" : area_start.z,
@@ -460,6 +485,8 @@ class addWater(Solid_P2Q):
                 "young_s" : young_s,
                 "nu_s" : nu_s,
                 "rho_s" : rho_s,
+                "la_s" : la_s,
+                "mu_s" : mu_s,
                 "mu_f" : mu_f,
                 "lambda_f" : lambda_f,
                 "kappa_f" : kappa_f,
@@ -480,43 +507,34 @@ class addWater(Solid_P2Q):
             s.to_csv(dir_export + "/" + "Information", header=False)
 
     def export_program(self):
-        with open(__file__, mode="r", encoding="utf-8") as fr:
-            prog = fr.read()
-        with open(dir_export + "/" + "program.txt", mode="w") as fw:
-            fw.write(prog)
-            fw.flush()
+        if EXPORT :
+            with open(__file__, mode="r", encoding="utf-8") as fr:
+                prog = fr.read()
+            with open(dir_export + "/" + "program.txt", mode="w") as fw:
+                fw.write(prog)
+                fw.flush()
 
     def export_calculation_domain(self) :
-        pos = np.array([
-            [area_start.x, area_start.y, area_start.z], 
-            [area_end.x, area_start.y, area_start.z],
-            [area_end.x, area_end.y, area_start.z],
-            [area_start.x, area_end.y, area_start.z],
-            [area_start.x, area_start.y, area_end.z], 
-            [area_end.x, area_start.y, area_end.z],
-            [area_end.x, area_end.y, area_end.z],
-            [area_start.x, area_end.y, area_end.z]
-        ])
-        pointsToVTK(
-            dir_export + "/" + "vtu" + "/" + "Domain",
-            pos[:, 0].copy(),
-            pos[:, 1].copy(),
-            pos[:, 2].copy()
-        )
+        if EXPORT:
+            pos = np.array([
+                [area_start.x, area_start.y, area_start.z], 
+                [area_end.x, area_start.y, area_start.z],
+                [area_end.x, area_end.y, area_start.z],
+                [area_start.x, area_end.y, area_start.z],
+                [area_start.x, area_start.y, area_end.z], 
+                [area_end.x, area_start.y, area_end.z],
+                [area_end.x, area_end.y, area_end.z],
+                [area_start.x, area_end.y, area_end.z]
+            ])
+            pointsToVTK(
+                dir_export + "/" + "vtu" + "/" + "Domain",
+                pos[:, 0].copy(),
+                pos[:, 1].copy(),
+                pos[:, 2].copy()
+            )
 
 
-    def export_Fluid(self):
-        num_f_end = self.num_p_f_init + self.add_times[None] * self.num_p_f_add
-        pos_p_np = self.pos_p_f.to_numpy()[:num_f_end, :]
-        P_p_np = self.P_p_f.to_numpy()[:num_f_end]
-        point_data = {"pressure": P_p_np.copy()}
-        pointsToVTK(
-            dir_export + "/" + "vtu" + "/" + "FLUID{:05d}".format(self.output_times[None]),
-            pos_p_np[:, 0].copy(),
-            pos_p_np[:, 1].copy(),
-            pos_p_np[:, 2].copy(),
-            data=point_data
-        )
+    
 
     def export_numpy(self):
         np.save(dir_numpy + "/" + "pos_p_s_{:05d}".format(self.output_times[None]), self.pos_p_s.to_numpy())
@@ -536,93 +554,29 @@ class addWater(Solid_P2Q):
 
 
 
-    @ti.kernel 
-    def cal_norm_S(self):
-        for g in range(self.num_gauss_press):
-            _es, mn = g // (nip**2), g % (nip**2)
-            m, n = mn // nip, mn % nip
-            k1, k2 = ti.Vector([0.0, 0.0, 0.0]), ti.Vector([0.0, 0.0, 0.0])
-            pos_a = ti.Vector([0.0, 0.0, 0.0])
-            for _a1 in ti.static(range(3)):
-                for _a2 in ti.static(range(3)):
-                    a = self.esN_pN_press[_es, _a1, _a2]
-                    pos_a += self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.pos_p_s[a]
-                    k1 += self.dv_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.pos_p_s[a]
-                    k2 += self.v_Gauss[_a1, m] * self.dv_Gauss[_a2, n] * self.pos_p_s[a]
-            k3 = k1.cross(k2)
-            norm = k3.normalized()
-            norm *= -1.0 if INVERSE_NORM else 1.0
-            base = ti.cast((pos_a - area_start) * inv_dx - 0.5, ti.i32)
-            fx = (pos_a - area_start) * inv_dx - ti.cast(base, float)
-            w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
-            for i in ti.static(range(3)):
-                for j in ti.static(range(3)):
-                    for k in ti.static(range(3)):
-                        ix, iy, iz = base.x + i, base.y + j, base.z + k
-                        self.norm_S[ix, iy, iz] += w[i].x * w[j].y * w[k].z * norm
-
-
 
     @ti.kernel
     def diri_norm_S(self):
-        for _IxIyIz in range(self.num_diri_I):
-            IxIyIz = self.diri_I[_IxIyIz]
+        for _IxIyIz in range(self.num_S_fix):
+            IxIyIz = self.S_fix[_IxIyIz]
             iz, ixiy = IxIyIz // (nx*ny), IxIyIz % (nx*ny)
             iy, ix = ixiy // nx, ixiy % nx
             self.norm_S[ix, iy, iz] = ti.Vector([0.0, 0.0, 0.0])
             
-        for _IxIyIz in range(self.num_add_I):
-            IxIyIz = self.add_I[_IxIyIz]
+        for _IxIyIz in range(self.num_F_add):
+            IxIyIz = self.F_add[_IxIyIz]
             iz, ixiy = IxIyIz // (nx*ny), IxIyIz % (nx*ny)
             iy, ix = ixiy // nx, ixiy % nx
             self.norm_S[ix, iy, iz] = ti.Vector([0.0, 0.0, 0.0]) 
 
     @ti.kernel
     def p2g(self):
-        for p in range(self.num_p_active[None]) :
+        for p in range(self.num_p_s + self.num_p_f_active[None]) :
             if p < self.num_p_s :
-                self.p2g_SOLID(p)
+                Solid_MPM._p2g(self, p)
             else :
-                self.p2g_FLUID(p - self.num_p_s)
-
-    @ti.func
-    def p2g_SOLID(self, s : ti.int32) :
-        base = ti.cast((self.pos_p_s[s] - area_start) * inv_dx - 0.5, ti.i32)
-        fx = (self.pos_p_s[s] - area_start) * inv_dx - ti.cast(base, float)
-        w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
-        for i in ti.static(range(3)):
-            for j in ti.static(range(3)):
-                for k in ti.static(range(3)):
-                    ix, iy, iz = base.x + i, base.y + j, base.z + k
-                    I = ti.Vector([i, j, k])
-                    dist = (float(I) - fx) * dx
-                    NpI = w[i].x * w[j].y * w[k].z
-                    f_p_int = - self.pos_p_s.grad[s]
-                    self.m_I[ix, iy, iz, SOLID] += NpI * self.m_p_s[s]
-                    self.p_I[ix, iy, iz, SOLID] += NpI * (self.m_p_s[s] * (self.vel_p_s[s] + self.C_p_s[s] @ dist) + dt * f_p_int)
-                    self.exist_Ix[ix], self.exist_Iy[iy], self.exist_Iz[iz] = EXIST, EXIST, EXIST
-
-    @ti.func
-    def p2g_FLUID(self, f : ti.int32) :
-        base = ti.cast((self.pos_p_f[f] - area_start) * inv_dx - 0.5, ti.i32)
-        fx = (self.pos_p_f[f] - area_start) * inv_dx - ti.cast(base, float)
-        w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
-        dw = [(fx - 1.5)  * inv_dx, -2 * (fx - 1) * inv_dx, (fx - 0.5) * inv_dx]
-        for i in ti.static(range(3)):
-            for j in ti.static(range(3)):
-                for k in ti.static(range(3)):
-                    ix, iy, iz = base.x + i, base.y + j, base.z + k
-                    I = ti.Vector([i, j, k])
-                    dist = (float(I) - fx) * dx
-                    NpI = w[i].x * w[j].y * w[k].z
-                    dNpIdx = ti.Vector([dw[i].x * w[j].y * w[k].z, w[i].x * dw[j].y * w[k].z, w[i].x * w[j].y * dw[k].z])
-                    self.m_I[ix, iy, iz, FLUID] += NpI * self.m_p_f[f]
-                    self.p_I[ix, iy, iz, FLUID] += NpI * (self.m_p_f[f] * (self.vel_p_f[f] + self.C_p_f[f] @ dist))
-                    self.f_F[ix, iy, iz] += NpI * self.m_p_f[f] * gi
-                    self.f_F[ix, iy, iz][0] += - self.m_p_f[f] / self.rho_p_f[f] * (self.sigma_p_f[f][0, 0] * dNpIdx[0] + self.sigma_p_f[f][0, 1] * dNpIdx[1] + self.sigma_p_f[f][0, 2] * dNpIdx[2])
-                    self.f_F[ix, iy, iz][1] += - self.m_p_f[f] / self.rho_p_f[f] * (self.sigma_p_f[f][1, 0] * dNpIdx[0] + self.sigma_p_f[f][1, 1] * dNpIdx[1] + self.sigma_p_f[f][1, 2] * dNpIdx[2])
-                    self.f_F[ix, iy, iz][2] += - self.m_p_f[f] / self.rho_p_f[f] * (self.sigma_p_f[f][2, 0] * dNpIdx[0] + self.sigma_p_f[f][2, 1] * dNpIdx[1] + self.sigma_p_f[f][2, 2] * dNpIdx[2])
-                    self.exist_Ix[ix], self.exist_Iy[iy], self.exist_Iz[iz] = EXIST, EXIST, EXIST
+                Fluid_MPM._p2g(self, p - self.num_p_s)
+    
 
 
     @ti.kernel
@@ -651,163 +605,75 @@ class addWater(Solid_P2Q):
             (self.domain_edge[2, 0],self.domain_edge[2, 1])
             ):
 
-        # for IxIyIz in range(nx*ny*nz):
-        #     iz, ixiy = IxIyIz // (nx*ny), IxIyIz % (nx*ny)
-        #     iy, ix = ixiy // nx, ixiy % nx
-
-            if self.m_I[ix, iy, iz, SOLID] > 0.0 or self.m_I[ix, iy, iz, FLUID]  > 0.0:
-                p_I_F_tilde = self.p_I[ix, iy, iz, FLUID] + dt * self.f_F[ix, iy, iz]
-                p_I_S_tilde = self.p_I[ix, iy, iz, SOLID]
+            if self.m_S[ix, iy, iz] > 0.0 or self.m_F[ix, iy, iz]  > 0.0:
+                p_I_F_tilde = self.p_F[ix, iy, iz] + dt * self.f_F[ix, iy, iz]
+                p_I_S_tilde = self.p_S[ix, iy, iz]
                 if self.norm_S[ix, iy, iz].norm_sqr() > 0.0 : self.norm_S[ix, iy, iz] = self.norm_S[ix, iy, iz].normalized()
                 norm_S_this = self.norm_S[ix, iy, iz]
-                CDT1 = self.m_I[ix, iy, iz, FLUID] > 0.0 and self.m_I[ix, iy, iz, SOLID] > 0.0
-                CDT2 = (self.m_I[ix, iy, iz, FLUID] * p_I_S_tilde - self.m_I[ix, iy, iz, SOLID] * p_I_F_tilde).dot(norm_S_this) > 0.0
+                CDT1 = self.m_F[ix, iy, iz] > 0.0 and self.m_S[ix, iy, iz] > 0.0
+                CDT2 = (self.m_F[ix, iy, iz] * p_I_S_tilde - self.m_S[ix, iy, iz] * p_I_F_tilde).dot(norm_S_this) > 0.0
                 if CDT1 and CDT2:
-                # if CDT1:
-                    f_I_nor = 1 / (dt * (self.m_I[ix, iy, iz, FLUID] + self.m_I[ix, iy, iz, SOLID])) * (self.m_I[ix, iy, iz, SOLID] * self.p_I[ix, iy, iz, FLUID] - self.m_I[ix, iy, iz, FLUID] * self.p_I[ix, iy, iz, SOLID]).dot(norm_S_this)
-                    f_I_nor += 1 / (self.m_I[ix, iy, iz, SOLID] + self.m_I[ix, iy, iz, FLUID]) * self.m_I[ix, iy, iz, SOLID] * self.f_F[ix, iy, iz].dot(norm_S_this)
+                    f_I_nor = 1 / (dt * (self.m_F[ix, iy, iz] + self.m_S[ix, iy, iz])) * (self.m_S[ix, iy, iz] * self.p_F[ix, iy, iz] - self.m_F[ix, iy, iz] * self.p_S[ix, iy, iz]).dot(norm_S_this)
+                    f_I_nor += 1 / (self.m_S[ix, iy, iz] + self.m_F[ix, iy, iz]) * self.m_S[ix, iy, iz] * self.f_F[ix, iy, iz].dot(norm_S_this)
 
                     f_S_cnt = f_I_nor * norm_S_this
-                    self.p_I[ix, iy, iz, SOLID] = p_I_S_tilde + dt * f_S_cnt
-                    self.p_I[ix, iy, iz, FLUID] = p_I_F_tilde - dt * f_S_cnt
+                    self.p_S[ix, iy, iz] = p_I_S_tilde + dt * f_S_cnt
+                    self.p_F[ix, iy, iz] = p_I_F_tilde - dt * f_S_cnt
                 else :
-                    self.p_I[ix, iy, iz, SOLID] = p_I_S_tilde
-                    self.p_I[ix, iy, iz, FLUID] = p_I_F_tilde
+                    self.p_S[ix, iy, iz] = p_I_S_tilde
+                    self.p_F[ix, iy, iz] = p_I_F_tilde
 
 
     @ti.kernel
     def diri_p_I(self):
-        for _IxIyIz in range(self.num_diri_I):
-            IxIyIz = self.diri_I[_IxIyIz]
+        for _IxIyIz in range(self.num_S_fix):
+            IxIyIz = self.S_fix[_IxIyIz]
             iz, ixiy = IxIyIz // (nx*ny), IxIyIz % (nx*ny)
             iy, ix = ixiy // nx, ixiy % nx
-            self.p_I[ix, iy, iz, SOLID] = ti.Vector([0.0, 0.0, 0.0])
+            self.p_S[ix, iy, iz] = ti.Vector([0.0, 0.0, 0.0])
             
-        for _IxIyIz in range(self.num_add_I):
-            IxIyIz = self.add_I[_IxIyIz]
+        for _IxIyIz in range(self.num_F_add):
+            IxIyIz = self.F_add[_IxIyIz]
             iz, ixiy = IxIyIz // (nx*ny), IxIyIz % (nx*ny)
             iy, ix = ixiy // nx, ixiy % nx
-            self.p_I[ix, iy, iz, FLUID] = vel_add_vec * self.m_I[ix, iy, iz, FLUID]
+            self.p_F[ix, iy, iz] = vel_add_vec * self.m_F[ix, iy, iz]
 
-    @ti.kernel
-    def cal_alpha_Dum(self) :
-        if ATTENUATION :
-            uKu, uMu = 0.0, 0.0
-            for p in range(self.num_p_s):
-                if self.pN_fix[p] == FIX : continue
-                u_this = self.pos_p_s[p] - self.pos_p_s_rest[p]
-                uKu += u_this.dot(self.pos_p_s.grad[p])
-                uMu += dim * self.m_p_s[p] * u_this.norm_sqr()
-            self.alpha_Dum[None] = 2 * ti.sqrt(uKu / uMu) if uMu > 0.0 else 0.0
 
     @ti.kernel
     def g2p(self):
-        for p in range(self.num_p_active[None]) :
+        for p in range(self.num_p_s + self.num_p_f_active[None]) :
             if p < self.num_p_s :
-                self.g2p_SOLID(p)
+                Solid_MPM._g2p(self, p)
             else :
-                self.g2p_FLUID(p - self.num_p_s)
-
-    @ti.func
-    def g2p_SOLID(self, s : ti.int32):
-        base = ti.cast((self.pos_p_s[s] - area_start) * inv_dx - 0.5, ti.i32)
-        fx = (self.pos_p_s[s] - area_start) * inv_dx - ti.cast(base, float)
-        w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
-        new_C_p, new_vel_p, new_d_pos_p = ti.Matrix([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]), ti.Vector([0.0, 0.0, 0.0]), ti.Vector([0.0, 0.0, 0.0])
-        for i in ti.static(range(3)):
-            for j in ti.static(range(3)):
-                for k in ti.static(range(3)):
-                    ix, iy, iz = base.x + i, base.y + j, base.z + k
-                    dist = (float(ti.Vector([i, j, k])) - fx) * dx
-                    NpI = w[i].x * w[j].y * w[k].z
-                    vel_this = self.p_I[ix, iy, iz, SOLID] / self.m_I[ix, iy, iz, SOLID]
-                    vel_this = ti.Vector([0.0, 0.0, 0.0]) if self.m_I[ix, iy, iz, SOLID] == 0.0 else vel_this
-                    new_C_p += 4 * inv_dx**2 * NpI * vel_this.outer_product(dist)
-                    new_vel_p += NpI * vel_this
-                    new_d_pos_p += NpI * vel_this * dt
-        self.C_p_s[s] = new_C_p
-        self.vel_p_s[s] = new_vel_p
-        self.d_pos_p_s[s] = new_d_pos_p
-
-    @ti.func
-    def g2p_FLUID(self, f : ti.i32) :
-        base = ti.cast((self.pos_p_f[f] - area_start) * inv_dx - 0.5, ti.i32)
-        fx = (self.pos_p_f[f] - area_start) * inv_dx - ti.cast(base, float)
-        w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
-        new_C_p, new_vel_p, new_d_pos_p = ti.Matrix([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]), ti.Vector([0.0, 0.0, 0.0]), ti.Vector([0.0, 0.0, 0.0])
-        for i in ti.static(range(3)):
-            for j in ti.static(range(3)):
-                for k in ti.static(range(3)):
-                    ix, iy, iz = base.x + i, base.y + j, base.z + k
-                    dist = (float(ti.Vector([i, j, k])) - fx) * dx
-                    NpI = w[i].x * w[j].y * w[k].z
-                    vel_this = self.p_I[ix, iy, iz, FLUID] / self.m_I[ix, iy, iz, FLUID]
-                    vel_this = ti.Vector([0.0, 0.0, 0.0]) if self.m_I[ix, iy, iz, FLUID] == 0.0 else vel_this
-                    new_C_p += 4 * inv_dx**2 * NpI * vel_this.outer_product(dist)
-                    new_vel_p += NpI * vel_this
-                    new_d_pos_p += NpI * vel_this * dt
-        self.C_p_f[f] = new_C_p
-        self.vel_p_f[f] = new_vel_p
-        self.d_pos_p_f[f] = new_d_pos_p
-
-
-
-    @ti.kernel
-    def update_p_I(self):
-        for f in range(self.num_p_f_init + self.add_times[None] * self.num_p_f_add):
-            base = ti.cast((self.pos_p_f[f] - area_start) * inv_dx - 0.5, ti.i32)
-            fx = (self.pos_p_f[f] - area_start) * inv_dx - ti.cast(base, float)
-            w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
-            for i in ti.static(range(3)):
-                for j in ti.static(range(3)):
-                    for k in ti.static(range(3)):
-                        ix, iy, iz = base.x + i, base.y + j, base.z + k
-                        dist = (float(ti.Vector([i, j, k])) - fx) * dx
-                        NpI = w[i].x * w[j].y * w[k].z
-                        self.p_I[ix, iy, iz, FLUID] += NpI * (self.m_p_f[f] * (self.vel_p_f[f] + self.C_p_f[f] @ dist))
-
-    @ti.kernel
-    def cal_L_p(self):
-        for f in range(self.num_p_f_init + self.add_times[None] * self.num_p_f_add):
-            base = ti.cast((self.pos_p_f[f] - area_start) * inv_dx - 0.5, ti.i32)
-            fx = (self.pos_p_f[f] - area_start) * inv_dx - ti.cast(base, float)
-            w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2] 
-            dw = [(fx - 1.5)  * inv_dx, -2 * (fx - 1) * inv_dx, (fx - 0.5) * inv_dx]
-            new_L_p_f = ti.Matrix([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
-            for i in ti.static(range(3)):
-                for j in ti.static(range(3)):
-                    for k in ti.static(range(3)):
-                        ix, iy, iz = base.x + i, base.y + j, base.z + k
-                        vel_I_this = self.p_I[ix, iy, iz, FLUID] / self.m_I[ix, iy, iz, FLUID]
-                        vel_I_this = [0.0, 0.0, 0.0] if self.m_I[ix, iy, iz, FLUID] == 0 else vel_I_this
-                        dv = ti.Matrix([
-                            [dw[i].x * w[j].y * w[k].z * vel_I_this.x, w[i].x * dw[j].y * w[k].z * vel_I_this.x, w[i].x * w[j].y * dw[k].z * vel_I_this.x],
-                            [dw[i].x * w[j].y * w[k].z * vel_I_this.y, w[i].x * dw[j].y * w[k].z * vel_I_this.y, w[i].x * w[j].y * dw[k].z * vel_I_this.y],
-                            [dw[i].x * w[j].y * w[k].z * vel_I_this.z, w[i].x * dw[j].y * w[k].z * vel_I_this.z, w[i].x * w[j].y * dw[k].z * vel_I_this.z]
-                        ])
-                        new_L_p_f += dv
-            self.L_p_f[f] = new_L_p_f
-
-    @ti.kernel
-    def cal_rho_sigma_p(self):
-        Iden = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        for f in range(self.num_p_f_init + self.add_times[None] * self.num_p_f_add):
-            tr_Dep = self.L_p_f[f].trace() * dt
-            self.rho_p_f[f] /= 1 + tr_Dep
-            P_this = kappa_f * ((self.rho_p_f[f] / rho_f)**gamma_f - 1)
-            epsilon_dot = 0.5 * (self.L_p_f[f] + self.L_p_f[f].transpose())
-            self.sigma_p_f[f] = 2 * mu_f * epsilon_dot + (lambda_f - P_this) * Iden
-            self.P_p_f[f] = P_this
+                Fluid_MPM._g2p(self, p - self.num_p_s)
+    
 
     @ti.kernel
     def plus_pos_p(self) :
-        for p in range(self.num_p_active[None]) :
+        for p in range(self.num_p_s + self.num_p_f_active[None]) :
             if p < self.num_p_s : 
                 self.pos_p_s[p] += self.d_pos_p_s[p]
-                if self.pos_p_s[p].x < BIG : self.divergence[None] == DIVERGENCE
+                if not(self.pos_p_s[p].x < BIG) :
+                    self.divergence[None] = DIVERGENCE
             else : 
-                self.pos_p_f[p - self.num_p_s] += self.d_pos_p_f[p - self.num_p_s]
-                if self.pos_p_f[p - self.num_p_s].x < BIG : self.divergence[None] == DIVERGENCE
+                self._plus_pos_p_f(p - self.num_p_s)
+                
+    @ti.kernel
+    def update_p_F(self):
+        for f in range(self.num_p_f_active[None]) :
+            self._update_p_F(f)
+            
+    @ti.kernel
+    def cal_L_p_f(self) :
+        for f in range(self.num_p_f_active[None]) :
+            self._cal_L_p_f(f)
+            
+    @ti.kernel
+    def cal_rho_sigma_p_f(self):
+        for f in range(self.num_p_f_active[None]) :
+            self._cal_rho_sigma_p_f(f)
+            
+            
 
     def clear(self) :
         self.clear_grid()
@@ -823,10 +689,10 @@ class addWater(Solid_P2Q):
             (self.domain_edge[1, 0],self.domain_edge[1, 1]),
             (self.domain_edge[2, 0],self.domain_edge[2, 1])
             ):
-            self.m_I[ix, iy, iz, SOLID] = 0.0
-            self.m_I[ix, iy, iz, FLUID] = 0.0
-            self.p_I[ix, iy, iz, SOLID] = [0.0, 0.0, 0.0]
-            self.p_I[ix, iy, iz, FLUID] = [0.0, 0.0, 0.0]
+            self.m_S[ix, iy, iz] = 0.0
+            self.m_F[ix, iy, iz] = 0.0
+            self.p_S[ix, iy, iz] = [0.0, 0.0, 0.0]
+            self.p_F[ix, iy, iz] = [0.0, 0.0, 0.0]
             self.f_F[ix, iy, iz] = [0.0, 0.0, 0.0]
             self.norm_S[ix, iy, iz] = [0.0, 0.0, 0.0]
 
@@ -837,24 +703,9 @@ class addWater(Solid_P2Q):
 
         if self.divergence[None] == DIVERGENCE:
             sys.exit("Error : The values diverged.")
+            
                         
-#     @ti.kernel
-#     def plus_vel_pos_p_s(self):
-#         if ATTENUATION :
-#             beta = 0.5 * dt * self.alpha_Dum[None]
-#             for p in range(self.num_p_s_s):
-#                 if self.pN_fix[p] == FIX : continue
-#                 f_p_init = - self.pos_p_s.grad[p]
-#                 self.vel_p[p] = (1 - beta) / (1 + beta) * self.vel_p[p] + dt * (self.f_p_ext[p] + f_p_init) / (self.m_p_s[p] * (1 + beta))
-#                 self.pos_p_s[p] = self.pos_p_s[p] + dt * self.vel_p[p]
-                
-#         else :
-#             for p in range(self.num_p_s_s):
-#                 if self.pN_fix[p] == FIX : continue
-#                 f_p_init = - self.pos_p_s.grad[p]
-#                 self.vel_p[p] += dt * (self.f_p_ext[p] + f_p_init) / self.m_p_s[p]
-#                 self.pos_p_s[p] += dt * self.vel_p[p]
-
+    
 
     def main(self):
         print("roop start")
@@ -866,22 +717,21 @@ class addWater(Solid_P2Q):
                 if self.add_times[None] <= num_add:
                     self.add_f()
                     self.add_times[None] += 1
-                    self.num_p_active[None] += self.num_p_f_add
+                    self.num_p_f_active[None] += self.num_p_f_add
                     
                     
             if self.time_steps[None] % output_span == 0:
                 print(self.time_steps[None])
+                
                 if EXPORT:
                     self.export_Solid(msh_s, dir_vtu + "/" + "SOLID{:05d}.vtu".format(self.output_times[None]))
-                    self.export_Fluid()
+                    self.export_Fluid(dir_vtu + "/" + "FLUID{:05d}".format(self.output_times[None]))
                     if EXPORT_NUMPY :
                         self.export_numpy()
                     self.output_times[None] += 1
                 
             with ti.Tape(self.StrainEnergy):
                 self.cal_StrainEnergy()
-                
-            
                 
             self.cal_norm_S()
             self.p2g()
@@ -892,18 +742,17 @@ class addWater(Solid_P2Q):
             
             self.g2p()
             
-            self.p_I.fill(0)
-            self.update_p_I()
+            self.p_F.fill(0)
+            self.update_p_F()
             self.diri_p_I()
-            self.cal_L_p()
-            self.cal_rho_sigma_p()
+            self.cal_L_p_f()
+            self.cal_rho_sigma_p_f()
             self.plus_pos_p()
             self.clear()
 
             self.whether_continue()
 
             self.time_steps[None] += 1
-
 
 
 
