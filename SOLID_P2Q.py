@@ -8,7 +8,7 @@ import sys
 class Solid_P2Q:
     def __init__(
             self, 
-            msh_s, rho_s, young_s, nu_s, la_s, mu_s, dt, nip, dim = 3, gi = ti.Vector([0.0, 0.0, -9.81]), press_const = 0.0,
+            msh_s, rho_s, young_s, nu_s, la_s, mu_s, dt, nip, dim = 3, gi = ti.Vector([0.0, 0.0, 0.0]), press_const = 0.0,
             INVERSE_NORM = True, ATTENUATION_s = False, PRESS_LABEL = 2, FIX = 1, BIG = 1.0e20, DIVERGENCE = 1.0
         ):
         self.dim = dim
@@ -33,15 +33,16 @@ class Solid_P2Q:
         self.num_es_s, self.num_node_sur_s = msh_s.cells_dict[self.SUR_s].shape
         self.num_gauss = self.num_t_s * nip**dim
         
-
+    def set_taichi_field(self):
         self.m_p_s = ti.field(dtype=float, shape=self.num_p_s)
         self.sN_fix = ti.field(dtype=ti.i32, shape=self.num_p_s)
-        self.pos_p_s = ti.Vector.field(dim, dtype=float, shape=self.num_p_s, needs_grad=True)
-        self.pos_p_s_rest = ti.Vector.field(dim, dtype=float, shape=self.num_p_s)
-        self.vel_p_s = ti.Vector.field(dim, dtype=float, shape=self.num_p_s)
-        self.f_p_ext_s = ti.Vector.field(dim, dtype=float, shape=self.num_p_s)
-        self.C_p_s = ti.Vector.field(dim, dtype=float, shape=self.num_p_s)
-        self.Ja_Ref_s = ti.Matrix.field(dim, dim, dtype=float, shape=(self.num_t_s * nip**dim))
+        self.pos_p_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s, needs_grad=True)
+        self.pos_p_s_rest = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
+        self.vel_p_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
+        self.f_p_int_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
+        self.f_p_ext_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
+        self.C_p_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
+        self.Ja_Ref_s = ti.Matrix.field(self.dim, self.dim, dtype=float, shape=(self.num_t_s * self.nip**self.dim))
         self.tN_pN_arr_s = ti.field(dtype=ti.i32, shape=(self.num_t_s, self.num_node_ele_s))
         self.tN_pN_s = ti.field(dtype=ti.i32, shape=(self.num_t_s, 3, 3, 3))
         self.esN_pN_arr_s = ti.field(dtype=ti.i32, shape=(self.num_es_s, self.num_node_sur_s))
@@ -246,7 +247,6 @@ class Solid_P2Q:
                 for _a2 in ti.static(range(3)):
                     for _a3 in ti.static(range(3)):
                         a = self.tN_pN_s[t, _a1, _a2, _a3]
-                        self.m_p_s[a] += self.rho_s * self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.v_Gauss[_a3, l] * self.gauss_w[m] * self.gauss_w[n] * self.gauss_w[l] * det_ja_ref
                         self.f_p_ext_s[a] += self.rho_s * self.gi * self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.v_Gauss[_a3, l] * self.gauss_w[m] * self.gauss_w[n] * self.gauss_w[l] * det_ja_ref
 
 
@@ -276,6 +276,11 @@ class Solid_P2Q:
             J = FiJ.determinant()
             element_energy = 0.5 * self.mu_s * (I1 - self.dim) - self.mu_s * ti.log(J) + 0.5 * self.la_s * ti.log(J)**2
             self.StrainEnergy[None] += element_energy * self.gauss_w[m] * self.gauss_w[n] * self.gauss_w[l] * det_ja_ref
+            
+    @ti.kernel
+    def cal_f_p_int_s(self) :
+        for s in range(self.num_p_s) :
+            self.f_p_int_s[s] = - self.pos_p_s.grad[s]
 
     @ti.kernel
     def cal_alpha_Dum(self) :
