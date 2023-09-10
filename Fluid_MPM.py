@@ -9,13 +9,11 @@ class Fluid_MPM :
         dim,
         rho_f, mu_f, gamma_f, kappa_f, lambda_f, dt, dx,
         nx, ny, nz,
-        ELE_f = "tetra",
         area_start = ti.Vector([0.0, 0.0, 0.0]), area_end = ti.Vector([1.0, 1.0, 1.0]),
         gi = ti.Vector([0.0, 0.0, 0.0]),
         EXIST = 1
     ) :
         self.dim = dim
-        self.ELE_f = ELE_f
         self.rho_f = rho_f
         self.mu_f = mu_f
         self.gamma_f = gamma_f
@@ -35,8 +33,6 @@ class Fluid_MPM :
     
     def set_taichi_field(self, num_p_f) :
         self.num_p_f = num_p_f
-        self.num_p_f_active = ti.field(dtype=ti.i32, shape=())
-        self.num_p_f_active[None] = num_p_f
         self.m_p_f = ti.field(dtype=float, shape=self.num_p_f)
         self.rho_p_f = ti.field(dtype=float, shape=self.num_p_f)
         self.P_p_f = ti.field(dtype=float, shape=self.num_p_f)
@@ -53,27 +49,27 @@ class Fluid_MPM :
         
     @ti.kernel
     def p2g(self) :
-        for f in range(self.num_p_f_active[None]):
+        for f in range(self.num_p_f):
             self._p2g(f)
             
     @ti.kernel
     def g2g(self) :
-        for f in range(self.num_p_f_active[None]):
+        for f in range(self.num_p_f):
             self._g2p(f)
             
     @ti.kernel
     def update_p_F(self) :
-        for f in range(self.num_p_f_active[None] ):
+        for f in range(self.num_p_f ):
             self._update_p_F(f)
             
     @ti.kernel
     def cal_L_p_f(self) :
-        for f in range(self.num_p_f_active[None] ):
+        for f in range(self.num_p_f ):
             self._cal_L_p_f(f)
             
     @ti.kernel
     def cal_rho_sigma_p_f(self) :
-        for f in range(self.num_p_f_active[None]) :
+        for f in range(self.num_p_f) :
             self.cal_rho_sigma_p_f(f)
             
         
