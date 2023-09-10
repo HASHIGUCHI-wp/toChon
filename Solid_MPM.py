@@ -35,33 +35,7 @@ class Solid_MPM():
         self.norm_S = ti.Vector.field(self.dim, dtype=float, shape=(self.nx, self.ny, self.nz))
         
         
-    @ti.kernel 
-    def cal_norm_S(self):
-        for g in range(self.num_gauss_press):
-            _es, mn = g // (self.nip**2), g % (self.nip**2)
-            m, n = mn // self.nip, mn % self.nip
-            k1, k2 = ti.Vector([0.0, 0.0, 0.0]), ti.Vector([0.0, 0.0, 0.0])
-            pos_a = ti.Vector([0.0, 0.0, 0.0])
-            for _a1 in ti.static(range(3)):
-                for _a2 in ti.static(range(3)):
-                    a = self.esN_pN_press[_es, _a1, _a2]
-                    pos_a += self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.pos_p_s[a]
-                    k1 += self.dv_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.pos_p_s[a]
-                    k2 += self.v_Gauss[_a1, m] * self.dv_Gauss[_a2, n] * self.pos_p_s[a]
-            k3 = k1.cross(k2)
-            norm = k3.normalized()
-            base = ti.cast((pos_a - self.area_start) * self.inv_dx - 0.5, ti.i32)
-            fx = (pos_a - self.area_start) * self.inv_dx - ti.cast(base, float)
-            w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
-            
-            # if ti.abs(pos_a.x - 3.0) < 1.0e-5 :
-            #     print(norm)
-                
-            for i in ti.static(range(3)):
-                for j in ti.static(range(3)):
-                    for k in ti.static(range(3)):
-                        ix, iy, iz = base.x + i, base.y + j, base.z + k
-                        self.norm_S[ix, iy, iz] += w[i].x * w[j].y * w[k].z * norm
+    
                         
                         
     @ti.kernel
@@ -75,8 +49,8 @@ class Solid_MPM():
         base = ti.cast((self.pos_p_s[s] - self.area_start) * self.inv_dx - 0.5, ti.i32)
         fx = (self.pos_p_s[s] - self.area_start) * self.inv_dx - ti.cast(base, float)
         w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
-        # f_p_int = - self.pos_p_s.grad[s]
-        f_p_int = self.f_p_int_s[s]
+        beta = 0.5 * self.dt * self.alpha_Dum[None] if self.ATTENUATION_s else 0.0
+        f_p_int = - self.pos_p_s.grad[s]
         for i in ti.static(range(3)):
             for j in ti.static(range(3)):
                 for k in ti.static(range(3)):
@@ -85,7 +59,8 @@ class Solid_MPM():
                     dist = (float(I) - fx) * self.dx
                     NpI = w[i].x * w[j].y * w[k].z
                     self.m_S[ix, iy, iz] += NpI * self.m_p_s[s]
-                    self.p_S[ix, iy, iz] += NpI * (self.m_p_s[s] * (self.vel_p_s[s] + self.C_p_s[s] @ dist) + self.dt * f_p_int)
+                    # self.p_S[ix, iy, iz] += NpI * (self.m_p_s[s] * (self.vel_s[s] + self.C_p_s[s] @ dist) + self.dt * f_p_int)
+                    self.p_S[ix, iy, iz] += NpI * ( (1 - beta) * self.m_p_s[s] * (self.vel_p_s[s] + self.C_p_s[s] @ dist) + self.dt * f_p_int) / (1 + beta)
                     self.exist_Ix[ix], self.exist_Iy[iy], self.exist_Iz[iz] = self.EXIST, self.EXIST, self.EXIST
         
     
