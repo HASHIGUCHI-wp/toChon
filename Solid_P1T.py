@@ -12,6 +12,7 @@ class Solid_P1T:
             msh_s, rho_s, young_s, nu_s, la_s, mu_s, dt, nip = 0, dim = 3, gi = ti.Vector([0.0, 0.0, 0.0]), press_const = 0.0,
             INVERSE_NORM = True, ATTENUATION_s = False, PRESS_LABEL = 2, FIX = 1, BIG = 1.0e20, DIVERGENCE = 1.0
         ):
+        self.msh_s = msh_s
         self.dim = dim
         self.dt = dt
         self.rho_s = rho_s
@@ -28,9 +29,9 @@ class Solid_P1T:
         self.FIX = FIX
         self.DIVERGENCE = DIVERGENCE
         self.ELE_s, self.SUR_s = "tetra", "triangle"
-        self.num_p_s = msh_s.points.shape[0]
-        self.num_t_s, self.num_node_ele_s = msh_s.cells_dict[self.ELE_s].shape
-        self.num_es_s, self.num_node_sur_s = msh_s.cells_dict[self.SUR_s].shape
+        self.num_p_s = self.msh_s.points.shape[0]
+        self.num_t_s, self.num_node_ele_s = self.msh_s.cells_dict[self.ELE_s].shape
+        self.num_es_s, self.num_node_sur_s = self.msh_s.cells_dict[self.SUR_s].shape
         
     def set_taichi_field(self):
         self.m_p_s = ti.field(dtype=float, shape=self.num_p_s)
@@ -66,8 +67,8 @@ class Solid_P1T:
         self.esN_pN_arr_s.from_numpy(msh_s.cells_dict[self.SUR_s])
 
 
-    def get_es_press(self, msh_s) :
-        es_press_np = np.arange(0, self.num_es_s)[msh_s.cell_data['gmsh:physical'][0] == self.PRESS_LABEL]
+    def get_es_press(self) :
+        es_press_np = np.arange(0, self.num_es_s)[self.msh_s.cell_data['gmsh:physical'][0] == self.PRESS_LABEL]
         self.num_es_press = es_press_np.shape[0]
         self.es_press = ti.field(dtype=ti.i32, shape=self.num_es_press)
         self.es_press.from_numpy(es_press_np)
@@ -142,8 +143,12 @@ class Solid_P1T:
                 if self.sN_fix[p] == self.FIX : continue
                 u_this = self.pos_p_s[p] - self.pos_p_s_rest[p]
                 uKu += u_this.dot(self.pos_p_s.grad[p])
-                uMu += self.dim * self.m_p_s[p] * u_this.norm_sqr()
-            self.alpha_Dum[None] = 2 * ti.sqrt(uKu / uMu) if uMu > 0.0 else 0.0
+                uMu += self.m_p_s[p] * u_this.norm_sqr()
+            self.alpha_Dum[None] = 2 * ti.sqrt(uKu / uMu) if uMu > 1.0e-5 else 0.0
+            # print(uKu, uMu)
+            # print(self.alpha_Dum[None])
+            # print(2 * ti.sqrt(uKu / uMu))
+            # print(uMu > 0.0)
 
 
     @ti.kernel
