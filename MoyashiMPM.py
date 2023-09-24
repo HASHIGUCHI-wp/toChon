@@ -20,37 +20,46 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
     def __init__(self,
             msh_s, msh_f_init, msh_f_add,
             dim, nip,
+            mesh_name_s, mesh_name_f_init, mesh_name_f_add,
             ELE_s, SUR_s, ELE_f,
             young_s, nu_s, la_s, mu_s, rho_s,
             rho_f, mu_f, gamma_f, kappa_f, lambda_f, length_f_add,
             dt, dx, nx, ny, nz, gi,
             dx_mesh, dx_mesh_f,
-            area_start, area_end,
+            prepare_point, area_start, area_end,
             diri_area_start, diri_area_end,
-            vel_add, vel_add_vec,
-            num_add, max_number, output_span, add_span_time_step,
-            ATTEMUATION_s, EXPORT, EXPORT_NUMPY, SEARCH,
-            dir_vtu, dir_numpy,
+            vel_add, vel_add_vec, grav,
+            num_add, max_number, output_span, output_span_numpy, add_span_time_step,
+            ATTENUATION_s, EXPORT, EXPORT_NUMPY, SEARCH, SCHEME, DATE,
+            SLIP,
+            dir_vtu, dir_numpy, dir_export,
             EXIST = 1,
             BIG = 1.0e20
         ):
         self.dim = dim
         self.nip = nip
+        self.mesh_name_s, self.mesh_name_f_init, self.mesh_name_f_add = mesh_name_s, mesh_name_f_init, mesh_name_f_add
         self.ELE_s, self.SUR_s, self.ELE_f = ELE_s, SUR_s, ELE_f
+        self.msh_s, self.msh_f_init, self.msh_f_add = msh_s, msh_f_init, msh_f_add
         self.young_s, self.nu_s, self.la_s, self.mu_s, self.rho_s = young_s, nu_s, la_s, mu_s, rho_s
         self.rho_f, self.mu_f, self.gamma_f, self.kappa_f, self.lambda_f, self.length_f_add = rho_f, mu_f, gamma_f, kappa_f, lambda_f, length_f_add
         self.dt, self.dx, self.nx, self.ny, self.nz, self.gi = dt, dx, nx, ny, nz, gi 
         self.dx_mesh, self.dx_mesh_f = dx_mesh, dx_mesh_f
+        self.prepare_point = prepare_point
         self.area_start, self.area_end = area_start, area_end
-        self.vel_add, self.vel_add_vec = vel_add, vel_add_vec
-        self.num_add, self.max_number, self.output_span, self.add_span_time_step = num_add, max_number, output_span, add_span_time_step
+        self.vel_add, self.vel_add_vec, self.grav = vel_add, vel_add_vec, grav
+        self.num_add, self.max_number, self.output_span, self.output_span_numpy, self.add_span_time_step = num_add, max_number, output_span, output_span_numpy, add_span_time_step
         self.diri_area_start, self.diri_area_end = diri_area_start, diri_area_end
         self.inv_dx = 1 / self.dx
-        self.ATTENUATION_s, self.SEARCH = ATTEMUATION_s, SEARCH
+        self.ATTENUATION_s, self.SEARCH, self.SCHEME, self.DATE = ATTENUATION_s, SEARCH, SCHEME, DATE
+        self.SLIP = SLIP
         self.EXPORT, self.EXPORT_NUMPY = EXPORT, EXPORT_NUMPY
-        self.dir_vtu, self.dir_numpy = dir_vtu, dir_numpy
+        self.dir_vtu, self.dir_numpy, self.dir_export = dir_vtu, dir_numpy, dir_export
         self.BIG = BIG
         self.EXIST, self.DIVERGENCE = 1, 1
+        
+        print("ATTENUATION_s", ATTENUATION_s)
+        print("self.ATTENUATION_s", self.ATTENUATION_s)
         
         self.time_steps = ti.field(dtype=ti.i32, shape=())
         self.output_times = ti.field(dtype=ti.i32, shape=())
@@ -70,7 +79,6 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
         if self.ELE_s == "hexahedron27" :
             print("ELE_s", ELE_s)
             Solid_P2Q.__init__(self, 
-                msh_s = msh_s,
                 rho_s = self.rho_s,
                 young_s = self.young_s,
                 nu_s = self.nu_s,
@@ -78,19 +86,21 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
                 mu_s = self.mu_s,
                 dt = self.dt,
                 nip = self.nip,
-                gi = self.gi
+                gi = self.gi,
+                ATTENUATION_s = self.ATTENUATION_s
             )
         elif self.ELE_s == "tetra" :
             print("ELE_s", ELE_s)
             Solid_P1T.__init__(self, 
-                msh_s = msh_s,
+                msh_s = self.msh_s,
                 rho_s = self.rho_s,
                 young_s = self.young_s,
                 nu_s = self.nu_s,
                 la_s = self.la_s,
                 mu_s = self.mu_s,
                 dt = self.dt,
-                gi = self.gi
+                gi = self.gi,
+                ATTENUATION_s = self.ATTENUATION_s
             )
             
         Fluid_MPM.__init__(self,
@@ -139,12 +149,12 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
         Fluid_MPM.set_taichi_field(self, self.num_p_f_all)
         
     def init(self) :
-        self.set_f_add(msh_f_add)
-        self.set_f_init(msh_f_init)
-        self.set_s_init(msh_s)
+        self.set_f_add()
+        self.set_f_init()
+        self.set_s_init()
         self.get_S_fix()
-        self.get_F_add(msh_f_add)
-        self.get_es_press(msh_s)
+        self.get_F_add()
+        self.get_es_press()
         self.set_esN_pN_press()
         
         if self.ELE_s == "hexahedron27" :
@@ -153,17 +163,17 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
             self.cal_Ja_Ref_s()
             
         self.cal_m_p_s()
-        self.set_info(DATE, dir_export, SCHEME, SLIP, mesh_name_s, mesh_name_f_init, mesh_name_f_add, grav)
-        self.export_info(dir_export + "/" + "Information")
-        self.export_program(dir_export + "/" + "program.txt")
-        self.export_calculation_domain(dir_export + "/" + "vtu" + "/" + "Domain")
+        self.set_info()
+        self.export_info()
+        self.export_program()
+        self.export_calculation_domain()
 
 
-    def set_f_add(self, msh_f_add):
+    def set_f_add(self):
         pos_f_add_np = np.zeros((self.num_p_f_add, self.dim), dtype=np.float64)
         for _f in range(self.num_node_ele_f) :
-            f_arr = msh_f_add.cells_dict[self.ELE_f][:, _f]
-            pos_f_add_np += msh_f_add.points[f_arr, :]
+            f_arr = self.msh_f_add.cells_dict[self.ELE_f][:, _f]
+            pos_f_add_np += self.msh_f_add.points[f_arr, :]
         pos_f_add_np /= self.num_node_ele_f
         self.pos_p_f_add.from_numpy(pos_f_add_np)
         self.m_p_f_add.fill(self.rho_f * (self.dx_mesh_f)**self.dim)
@@ -171,20 +181,20 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
 
 
 
-    def set_f_init(self, msh_f_init):   
-        pos_p_f_np = np.zeros((self.num_p_f, dim), dtype=np.float64)
+    def set_f_init(self):   
+        pos_p_f_np = np.zeros((self.num_p_f_all, self.dim), dtype=np.float64)
         for _f in range(self.num_node_ele_f) :
-            f_arr = msh_f_init.cells_dict[self.ELE_f][:, _f]
-            pos_p_f_np[:self.num_p_f_init] += msh_f_init.points[f_arr, :]
+            f_arr = self.msh_f_init.cells_dict[self.ELE_f][:, _f]
+            pos_p_f_np[:self.num_p_f_init] += self.msh_f_init.points[f_arr, :]
         pos_p_f_np /= self.num_node_ele_f
-        pos_p_f_np[self.num_p_f_init:, :] = prepare_point
+        pos_p_f_np[self.num_p_f_init:, :] = self.prepare_point
         self.pos_p_f.from_numpy(pos_p_f_np)
 
-        rho_p_f_np = np.zeros((self.num_p_f), dtype=np.float64)
-        rho_p_f_np[:self.num_p_f_init] = rho_f 
+        rho_p_f_np = np.zeros((self.num_p_f_all), dtype=np.float64)
+        rho_p_f_np[:self.num_p_f_init] = self.rho_f 
         self.rho_p_f.from_numpy(rho_p_f_np)
 
-        m_p_f_np = np.zeros((self.num_p_f), dtype=np.float64)
+        m_p_f_np = np.zeros((self.num_p_f_all), dtype=np.float64)
         m_p_f_np[:self.num_p_f_init] = self.rho_f * (self.dx_mesh_f)**self.dim
         self.m_p_f.from_numpy(m_p_f_np)
     
@@ -196,11 +206,11 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
     #             self.cal_m_p_f_add(t - self.num_t_f_init)
                         
 
-    def set_s_init(self, msh_s):
-        self.pos_p_s.from_numpy(msh_s.points)
-        self.pos_p_s_rest.from_numpy(msh_s.points)
-        self.tN_pN_arr_s.from_numpy(msh_s.cells_dict[self.ELE_s])
-        self.esN_pN_arr_s.from_numpy(msh_s.cells_dict[self.SUR_s])
+    def set_s_init(self):
+        self.pos_p_s.from_numpy(self.msh_s.points)
+        self.pos_p_s_rest.from_numpy(self.msh_s.points)
+        self.tN_pN_arr_s.from_numpy(self.msh_s.cells_dict[self.ELE_s])
+        self.esN_pN_arr_s.from_numpy(self.msh_s.cells_dict[self.SUR_s])
         
 
     @ti.kernel
@@ -241,10 +251,10 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
         print("num_S_fix", self.num_S_fix)
 
     
-    def get_F_add(self, msh_f_add):
+    def get_F_add(self):
         F_add_np = np.zeros(0, dtype=np.int32)
-        for _p in range(msh_f_add.points.shape[0]):
-            pos_p_this = msh_f_add.points[_p, :]
+        for _p in range(self.msh_f_add.points.shape[0]):
+            pos_p_this = self.msh_f_add.points[_p, :]
             base_x = int((pos_p_this[0] - self.area_start[0]) * self.inv_dx - 0.5)
             base_y = int((pos_p_this[1] - self.area_start[1]) * self.inv_dx - 0.5)
             base_z = int((pos_p_this[2] - self.area_start[2]) * self.inv_dx - 0.5)
@@ -260,19 +270,23 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
         self.F_add.from_numpy(F_add_np)        
         print("num_F_add", self.num_F_add)
 
-    def set_info(self, DATE, dir_export, SCHEME, SLIP, mesh_name_s, mesh_name_f_init, mesh_name_f_add, grav) :
+    def set_info(self) :
+        print("self.ATTENUATION_s", self.ATTENUATION_s)
         self.data = {
-                "date" : DATE ,
-                "dir_export" : dir_export,
-                "Scheme" : SCHEME,
-                "Slip" : SLIP,
+                "date" : self.DATE ,
+                "dir_export" : self.dir_export,
+                "date" : self.DATE,
+                "Scheme" : self.SCHEME,
+                "Slip" : self.SLIP,
+                "SEARCH" : self.SEARCH,
                 "dim" : self.dim,
-                "mesh_name_s" : mesh_name_s,
-                "mesh_name_f_init" : mesh_name_f_init,
-                "mesh_name_f_add" : mesh_name_f_add,
+                "mesh_name_s" : self.mesh_name_s,
+                "mesh_name_f_init" : self.mesh_name_f_init,
+                "mesh_name_f_add" : self.mesh_name_f_add,
                 "Attenuation" : self.ATTENUATION_s,
                 "max_number" : self.max_number,
                 "output_span" : self.output_span,
+                "output_span_numpy" : self.output_span_numpy,
                 "add_span_time_step" : self.add_span_time_step,
                 "num_add" : self.num_add,
                 "vel_add" : self.vel_add,
@@ -305,24 +319,27 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
                 "kappa_f" : self.kappa_f,
                 "rho_f" : self.rho_f,
                 "gamma_f" : self.gamma_f,
+                "length_f_add" : self.length_f_add,
                 "nip" : self.nip,
-                "grav" : grav
+                "grav" : self.grav
             }
+        
+        print("gi", self.gi)
     
-    def export_info(self, dir):
+    def export_info(self):
         if self.EXPORT:
             s = pd.Series(self.data)
-            s.to_csv(dir, header=False)
+            s.to_csv(self.dir_export + "/" + "Information", header=False)
 
-    def export_program(self, dir):
+    def export_program(self):
         if self.EXPORT :
             with open(__file__, mode="r", encoding="utf-8") as fr:
                 prog = fr.read()
-            with open(dir, mode="w") as fw:
+            with open(self.dir_export +  "/" + "program.txt", mode="w") as fw:
                 fw.write(prog)
                 fw.flush()
 
-    def export_calculation_domain(self, dir) :
+    def export_calculation_domain(self) :
         if self.EXPORT:
             pos = np.array([
                 [self.area_start.x, self.area_start.y, self.area_start.z], 
@@ -335,7 +352,7 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
                 [self.area_start.x, self.area_end.y, self.area_end.z]
             ])
             pointsToVTK(
-                dir,
+                self.dir_export + "/" + "vtu" + "/" + "Domain",
                 pos[:, 0].copy(),
                 pos[:, 1].copy(),
                 pos[:, 2].copy()
@@ -445,6 +462,7 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
             iz, ixiy = IxIyIz // (self.nx*self.ny), IxIyIz % (self.nx*self.ny)
             iy, ix = ixiy // self.nx, ixiy % self.nx
             self.p_F[ix, iy, iz] = self.vel_add_vec * self.m_F[ix, iy, iz]
+            self.p_S[ix, iy, iz] = ti.Vector([0.0, 0.0, 0.0])
 
 
     @ti.kernel
@@ -463,6 +481,7 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
                 self.pos_p_s[p] += self.d_pos_p_s[p]
                 if not(self.pos_p_s[p].x < self.BIG) :
                     self.divergence[None] = self.DIVERGENCE
+                    # print("SOLID divergenced", self.pos_p_s_rest[p], self.pos_p_s[p])
             else : 
                 self._plus_pos_p_f(p - self.num_p_s)
                 
@@ -512,9 +531,15 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
 
     def whether_continue(self):
         if self.exist_edge[None] == self.EXIST :
-            sys.exit("Error : Particles exist near the edge of the computational domain. Please extend the computational domain and restart the simulation.")
-
+            pass
+            # self.export_Solid(self.dir_vtu + "/" + "SOLID_EDGE.vtu")
+            # self.export_Fluid(self.dir_vtu + "/" + "FLUID_EDGE")
+            # sys.exit("Error : Particles exist near the edge of the computational domain. Please extend the computational domain and restart the simulation.")
+            # print("Error : Particles exist near the edge of the computational domain. Please extend the computational domain and restart the simulation.")
+            
         if self.divergence[None] == self.DIVERGENCE:
+            self.export_Solid(self.dir_vtu + "/" + "SOLID_DIVERGED.vtu")
+            self.export_Fluid(self.dir_vtu + "/" + "FLUID_DIVERGED")
             sys.exit("Error : The values diverged.")
             
                         
@@ -533,21 +558,33 @@ class addWater(Solid_MPM, Fluid_MPM, Solid_P1T):
                 if self.EXPORT:
                     self.export_Solid(self.dir_vtu + "/" + "SOLID{:05d}.vtu".format(self.output_times[None]))
                     self.export_Fluid(self.dir_vtu + "/" + "FLUID{:05d}".format(self.output_times[None]))
+                    
+                if self.time_steps[None] % self.output_span_numpy == 0:
                     if self.EXPORT_NUMPY :
                         self.export_numpy()
-                    self.output_times[None] += 1
+                        
+                self.output_times[None] += 1
             
             if self.protruding[None] <= 0.0:
-                if self.add_times[None] <= self.num_add:
+                if self.add_times[None] < self.num_add:
+                    print("progress : add water")
                     self.add_f()
                     self.add_times[None] += 1
                     self.num_p_f_active[None] += self.num_p_f_add
                     self.protruding[None] = self.length_f_add
+                else :
+                    # print("progress : finish add water")
+                    self.protruding[None] = - 1.0e-5
+                    self.vel_add = 0.0
+                    self.vel_add_vec = ti.Vector([0.0, 0.0, 0.0])
                     
                     
                 
             with ti.Tape(self.StrainEnergy):
                 self.cal_StrainEnergy()
+                
+            if self.ATTENUATION_s :
+                self.cal_alpha_Dum()
                 
             self.cal_norm_S()
             self.p2g()
@@ -583,7 +620,7 @@ if __name__ == '__main__':
     ti.init()
 
     USER = "Hashiguchi"
-    USING_MACHINE = "CERVO"
+    USING_MACHINE = "GILES"
     SCHEME = "MPM"
     ADD_INFO_LIST = False
     EXPORT = True
@@ -622,24 +659,21 @@ if __name__ == '__main__':
         FOLDER_NAME = "MoyashiAddWaterP2"
         
     elif ELE_s == "tetra" :
-        mesh_name_s = "MoyashiTetra"
+        # mesh_name_s = "MoyashiTetra"
+        mesh_name_s = "MoyashiTetraSize0p375"
         FOLDER_NAME = "MoyashiAddWaterP1T"
         
-    mesh_name_f_init = "MoyashiWaterInit2"
-    mesh_name_f_add = "MoyashiWaterAdd2"
+    # mesh_name_f_init = "MoyashiWaterInit2"
+    # mesh_name_f_add = "MoyashiWaterAdd2"
+    
+    mesh_name_f_init = "MoyashiInitWaterSize0p175"
+    mesh_name_f_add = "MoyashiAddWaterSize0p175"
     
     DATE = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
 
 
-    dir_export = "./consequence" + "/" + FOLDER_NAME + "/" + DATE 
-    dir_vtu = dir_export + "/" + "vtu"
-    dir_numpy = dir_export + "/" + "numpy"
-
-
-
-
-    dx_mesh = 0.75
-    dx_mesh_f = 0.75 / 2
+    dx_mesh = 0.375
+    dx_mesh_f = 0.175
     
     rho_s = 4e1
     young_s, nu_s = 4e5, 0.3
@@ -649,7 +683,7 @@ if __name__ == '__main__':
     kappa_f = 2.0e6
     dt = 0.000215
 
-    num_add = 20
+    num_add = 40
     vel_add = 10.0
     add_span_time = height_f_add / np.abs(vel_add)
     add_span_time_step = int(add_span_time // dt) + 1
@@ -666,40 +700,45 @@ if __name__ == '__main__':
 
 
 
-
-
-
-    if USING_MACHINE == "PC" :
-        ti.init(arch=ti.cpu, default_fp=ti.f64)
-        mesh_dir = "./mesh_file/"
-        if EXPORT :
-            os.makedirs(dir_export, exist_ok=True)
-            os.makedirs(dir_vtu, exist_ok=True)
-            if EXPORT_NUMPY :
-                os.makedirs(dir_numpy,  exist_ok=True)
-                
-    elif USING_MACHINE == "CERVO" :
-        ti.init(arch=ti.gpu, default_fp=ti.f64)
-        mesh_dir = "./mesh_file/Moyashi/"
+    if USING_MACHINE == "PC" or USING_MACHINE == "CERVO":
+        dir_mesh = "./mesh_file"
+        dir_export = "./consequence" + "/" + FOLDER_NAME + "/" + DATE 
+        dir_vtu = dir_export + "/" + "vtu"
+        dir_numpy = dir_export + "/" + "numpy"
         if EXPORT :
             os.makedirs(dir_export, exist_ok=True)
             os.makedirs(dir_vtu, exist_ok=True)
             if EXPORT_NUMPY :
                 os.makedirs(dir_numpy, exist_ok=True)
-            
-    elif USING_MACHINE == "ATLAS":
-        ti.init(arch=ti.gpu, default_fp=ti.f64, device_memory_fraction=0.9)
-        mesh_dir = '/home/hashiguchi/mpm_simulation/geometry/BendingArmAir/'
+        ti.init(arch=ti.cpu, default_fp=ti.f64)
+                
+    elif USING_MACHINE == "CERVO" :
+        dir_mesh = "./mesh_file/Moyashi"
+        dir_export = "./consequence" + "/" + FOLDER_NAME + "/" + DATE 
+        dir_vtu = dir_export + "/" + "vtu"
+        dir_numpy = dir_export + "/" + "numpy"
         if EXPORT :
-            info_list_dir = '/home/hashiguchi/mpm_simulation/result/' + FOLDER_NAME
-            export_dir = '/home/hashiguchi/mpm_simulation/result/' + FOLDER_NAME + "/" + DATE + "/"
-            os.makedirs(export_dir, exist_ok=True)
-            os.makedirs(export_dir + "vtu" + "/",  exist_ok=True)
+            os.makedirs(dir_export, exist_ok=True)
+            os.makedirs(dir_vtu, exist_ok=True)
+            if EXPORT_NUMPY :
+                os.makedirs(dir_numpy, exist_ok=True)
+        ti.init(arch=ti.gpu, default_fp=ti.f64)
+            
+    elif USING_MACHINE == "GILES":
+        dir_mesh = '/home/hashiguchi/mpm_simulation/geometry/Moyashi'
+        dir_export = '/home/hashiguchi/mpm_simulation/result/' + FOLDER_NAME + "/" + DATE
+        dir_vtu = dir_export + "/" + "vtu"
+        dir_numpy = dir_export + "/" + "numpy"
+        if EXPORT :
+            os.makedirs(dir_export, exist_ok=True)
+            os.makedirs(dir_vtu,  exist_ok=True)
+            os.makedirs(dir_numpy, exist_ok=True)
+        ti.init(arch=ti.gpu, default_fp=ti.f64, device_memory_fraction=0.9)
             
 
-    msh_s = meshio.read(mesh_dir + mesh_name_s + ".msh")
-    msh_f_init = meshio.read(mesh_dir + mesh_name_f_init + ".msh")
-    msh_f_add = meshio.read(mesh_dir + mesh_name_f_add + ".msh")
+    msh_s = meshio.read(dir_mesh + "/" + mesh_name_s + ".msh")
+    msh_f_init = meshio.read(dir_mesh + "/" + mesh_name_f_init + ".msh")
+    msh_f_add = meshio.read(dir_mesh + "/" + mesh_name_f_add + ".msh")
 
     
 
@@ -771,7 +810,7 @@ if __name__ == '__main__':
     max_number = max_number,
     output_span = output_span,
     add_span_time_step = add_span_time_step,
-    ATTEMUATION_s = ATTENUATION,
+    ATTENUATION_s = ATTENUATION,
     EXPORT = EXPORT,
     EXPORT_NUMPY = EXPORT_NUMPY,
     SEARCH = SEARCH,
