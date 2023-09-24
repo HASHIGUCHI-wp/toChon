@@ -167,7 +167,9 @@ class Fluid_MPM :
     @ti.func
     def _plus_pos_p_f(self, f : int) :
         self.pos_p_f[f] += self.d_pos_p_f[f]
-        if not(self.pos_p_f[f].x < self.BIG) : self.divergence[None] = self.DIVERGENCE
+        if not(self.pos_p_f[f].x < self.BIG) :
+            self.divergence[None] = self.DIVERGENCE
+            print("FLUID divergenced", f, self.pos_p_f[f])
         
     
     def export_Fluid(self, dir):
