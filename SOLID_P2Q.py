@@ -8,8 +8,8 @@ import sys
 class Solid_P2Q:
     def __init__(
             self, 
-            msh_s, rho_s, young_s, nu_s, la_s, mu_s, dt, nip, dim = 3, gi = ti.Vector([0.0, 0.0, 0.0]), press_const = 0.0,
-            INVERSE_NORM = True, ATTENUATION_s = False, PRESS_LABEL = 2, FIX = 1, BIG = 1.0e20, DIVERGENCE = 1.0
+            msh_s, rho_s, young_s, nu_s, la_s, mu_s, dt, nip, WEAK, dim = 3, gi = ti.Vector([0.0, 0.0, 0.0]), press_const = 0.0,
+            INVERSE_NORM = True, ATTENUATION_s = False, PRESS_LABEL = 2, FREE=0, FIX = 1, BIG = 1.0e20, DIVERGENCE = 1.0
         ):
         self.dim = dim
         self.nip = nip
@@ -26,11 +26,14 @@ class Solid_P2Q:
         self.ATTENUATION_s = ATTENUATION_s
         self.BIG = BIG
         self.FIX = FIX
+        self.FREE = FREE
         self.DIVERGENCE = DIVERGENCE
-        self.ELE_s, self.SUR_s = "hexahedron27", "quad9"
+        self.WEAK_S = WEAK
+        self.ELE_s, self.SUR_s, self.EDG_s = "hexahedron27", "quad9", "line3"
         self.num_p_s = msh_s.points.shape[0]
         self.num_t_s, self.num_node_ele_s = msh_s.cells_dict[self.ELE_s].shape
         self.num_es_s, self.num_node_sur_s = msh_s.cells_dict[self.SUR_s].shape
+        self.num_l_s, self.num_node_edg_s = msh_s.cells_dict[self.EDG_s].shape
         self.num_gauss = self.num_t_s * nip**dim
         
     def set_taichi_field(self):
@@ -41,6 +44,7 @@ class Solid_P2Q:
         self.vel_p_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
         self.f_p_int_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
         self.f_p_ext_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
+        self.f_p_cnt_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
         self.C_p_s = ti.Vector.field(self.dim, dtype=float, shape=self.num_p_s)
         self.Ja_Ref_s = ti.Matrix.field(self.dim, self.dim, dtype=float, shape=(self.num_t_s * self.nip**self.dim))
         self.tN_pN_arr_s = ti.field(dtype=ti.i32, shape=(self.num_t_s, self.num_node_ele_s))
@@ -115,6 +119,30 @@ class Solid_P2Q:
             self.dv_Gauss[0, m] = self.gauss_x[m] - 1 / 2
             self.dv_Gauss[1, m] = - 2 * self.gauss_x[m]
             self.dv_Gauss[2, m] = self.gauss_x[m] + 1 / 2
+            
+    
+    def leg_weights_roots_surface(self, n):
+        self.gauss_x_sur = ti.field(dtype=float, shape=self.sip)
+        self.gauss_w_sur = ti.field(dtype=float, shape=self.sip)
+
+        self.v_Gauss_sur = ti.field(dtype=float, shape=(3, self.sip))
+        self.dv_Gauss_sur = ti.field(dtype=float, shape=(3, self.sip))
+
+        x = sy.Symbol('x')
+        roots = sy.Poly(sy.legendre(n, x)).all_roots()  # n次ルジャンドル多項式の根を求める
+        x_i = np.array([rt.evalf(20) for rt in roots], dtype=np.float64) 
+        w_i = np.array([(2*(1-rt**2)/(n*sy.legendre(n-1, rt))**2).evalf(20) for rt in roots], dtype=np.float64)
+        self.gauss_x_sur.from_numpy(x_i)
+        self.gauss_w_sur.from_numpy(w_i)
+        
+        for m in range(n):
+            self.v_Gauss_sur[0, m] = 1 / 2 * self.gauss_x_sur[m] * (self.gauss_x_sur[m] - 1)
+            self.v_Gauss_sur[1, m] = - (self.gauss_x_sur[m] + 1) * (self.gauss_x_sur[m] - 1)
+            self.v_Gauss_sur[2, m] = 1 / 2 * (self.gauss_x_sur[m] + 1) * self.gauss_x_sur[m]
+
+            self.dv_Gauss_sur[0, m] = self.gauss_x_sur[m] - 1 / 2
+            self.dv_Gauss_sur[1, m] = - 2 * self.gauss_x_sur[m]
+            self.dv_Gauss_sur[2, m] = self.gauss_x_sur[m] + 1 / 2
 
 
     @ti.kernel
@@ -281,6 +309,44 @@ class Solid_P2Q:
     def cal_f_p_int_s(self) :
         for s in range(self.num_p_s) :
             self.f_p_int_s[s] = - self.pos_p_s.grad[s]
+            
+    
+    @ti.kernel
+    def cal_f_p_int_s_from_WEAK(self) :
+        for g in range(self.num_gauss):
+            t, mnl = g // (self.nip**3), g % (self.nip**3)
+            m, nl = mnl // (self.nip**2), mnl % (self.nip**2)
+            n, l  = nl // self.nip, nl % self.nip
+            ja_ref = self.Ja_Ref_s[g]
+            det_ja_ref = ja_ref.determinant()
+            det_ja_ref = ti.abs(det_ja_ref)
+            inv_trs_Ja_ref = ja_ref.inverse().transpose()
+            F = ti.Matrix([[0.0,0.0,0.0], [0.0,0.0,0.0], [0.0,0.0,0.0]])
+            for _a1 in ti.static(range(3)):
+                for _a2 in ti.static(range(3)):
+                    for _a3 in ti.static(range(3)):
+                        a = self.tN_pN_s[t, _a1, _a2, _a3]
+                        NT = ti.Vector([
+                            self.dv_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.v_Gauss[_a3, l], 
+                            self.v_Gauss[_a1, m] * self.dv_Gauss[_a2, n] * self.v_Gauss[_a3, l],
+                            self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.dv_Gauss[_a3, l]
+                        ])
+                        NX = inv_trs_Ja_ref @ NT
+                        F += self.pos_p_s[a].outer_product(NX)
+            inv_trs_F = F.inverse().transpose()
+            det_F = F.determinant()
+            for _a1 in ti.static(range(3)):
+                for _a2 in ti.static(range(3)):
+                    for _a3 in ti.static(range(3)):
+                        p = self.tN_pN_s[t, _a1, _a2, _a3]
+                        NT = ti.Vector([
+                            self.dv_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.v_Gauss[_a3, l], 
+                            self.v_Gauss[_a1, m] * self.dv_Gauss[_a2, n] * self.v_Gauss[_a3, l],
+                            self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.dv_Gauss[_a3, l]
+                        ])
+                        NX = inv_trs_Ja_ref @ NT
+                        self.f_p_int_s[p] += (- self.mu_s * F + (self.mu_s - self.la_s * ti.log(det_F)) * inv_trs_F) @ NX * det_ja_ref * self.gauss_w[m] * self.gauss_w[n] * self.gauss_w[l]
+    
 
     @ti.kernel
     def cal_alpha_Dum(self) :
@@ -292,6 +358,14 @@ class Solid_P2Q:
                 uKu += u_this.dot(self.pos_p_s.grad[p])
                 uMu += self.dim * self.m_p_s[p] * u_this.norm_sqr()
             self.alpha_Dum[None] = 2 * ti.sqrt(uKu / uMu) if uMu > 0.0 else 0.0
+            
+    
+    @ti.func
+    def _plus_vel_p(self, p : int) :
+        beta = 0.5 * self.dt * self.alpha_Dum[None]
+        if self.sN_fix[p] == self.FREE :
+            f_p_int = self.f_p_int_s[p] if self.WEAK_S else - self.pos_p_s.grad[p]
+            self.vel_p_s[p] = (1 - beta) / (1 + beta) * self.vel_p_s[p] + self.dt * (self.f_p_ext_s[p] + f_p_int) / (self.m_p_s[p] * (1 + beta))
 
 
     @ti.kernel
@@ -319,16 +393,16 @@ class Solid_P2Q:
             sys.exit("Error : The values diverged.")
 
 
-    def export_Solid(self, msh_s, dir):
-    
+    def export_Solid(self, dir):
+        pos_p_rest_np = self.pos_p_s_rest.to_numpy()
         cells = [
-            (self.ELE_s, msh_s.cells_dict[self.ELE_s])
+            (self.ELE_s, self.tN_pN_arr_s.to_numpy())
         ]
         mesh_ = meshio.Mesh(
-            msh_s.points,
+            pos_p_rest_np,
             cells,
             point_data = {
-                "displacememt" : self.pos_p_s.to_numpy() - msh_s.points
+                "displacememt" : self.pos_p_s.to_numpy() - pos_p_rest_np
             },
             cell_data = {
                 # "sigma_max" : [sigma_max.to_numpy()],
@@ -337,3 +411,32 @@ class Solid_P2Q:
             }
         )
         mesh_.write(dir)
+        
+        
+    @ti.kernel 
+    def cal_norm_S(self):
+        for g in range(self.num_gauss_press):
+            _es, mn = g // (self.nip**2), g % (self.nip**2)
+            m, n = mn // self.nip, mn % self.nip
+            k1, k2 = ti.Vector([0.0, 0.0, 0.0]), ti.Vector([0.0, 0.0, 0.0])
+            pos_a = ti.Vector([0.0, 0.0, 0.0])
+            for _a1 in ti.static(range(3)):
+                for _a2 in ti.static(range(3)):
+                    a = self.esN_pN_press[_es, _a1, _a2]
+                    pos_a += self.v_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.pos_p_s[a]
+                    k1 += self.dv_Gauss[_a1, m] * self.v_Gauss[_a2, n] * self.pos_p_s[a]
+                    k2 += self.v_Gauss[_a1, m] * self.dv_Gauss[_a2, n] * self.pos_p_s[a]
+            k3 = k1.cross(k2)
+            norm = k3.normalized()
+            base = ti.cast((pos_a - self.area_start) * self.inv_dx - 0.5, ti.i32)
+            fx = (pos_a - self.area_start) * self.inv_dx - ti.cast(base, float)
+            w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
+            
+            # if ti.abs(pos_a.x - 3.0) < 1.0e-5 :
+            #     print(norm)
+                
+            for i in ti.static(range(3)):
+                for j in ti.static(range(3)):
+                    for k in ti.static(range(3)):
+                        ix, iy, iz = base.x + i, base.y + j, base.z + k
+                        self.norm_S[ix, iy, iz] += w[i].x * w[j].y * w[k].z * norm
