@@ -8,8 +8,13 @@ from Solid_P2Q import Solid_P2Q
 
 ti.init(arch=ti.cpu, default_fp=ti.f64)
 
-dir_mesh = "./mesh_file"
-mesh_name = "Beam3DTransfiniteSize0p25"
+USING_MACHINE = "CERVO"
+
+if USING_MACHINE == "MAC" :
+    dir_mesh = "./mesh_file"
+elif USING_MACHINE == "CERVO" :
+    dir_mesh = "./mesh_file/Beam"
+mesh_name = "Beam3DTramsfiniteSize0p25"
 
 ATTENUATION_s = False
 EXPORT = True
@@ -40,10 +45,8 @@ gi = ti.Vector([0.0, 0.0, -9.81])
 print("dt_max", dt_max)
 print("dt", dt)
 
-# sys.exit()
-
-max_number = 20000
-output_span = 100
+max_number = 200000
+output_span = 1000
 
 COL_POINT = 0
 COL_SURFACE = 1
@@ -92,13 +95,11 @@ class collisionBox(Solid_P2Q):
         self.set_aN_a1a2a3()
         self.set_sN_fix()
         self.leg_weights_roots(self.nip)
-        self.set_tN_pN_s()
         self.cal_Ja_Ref_s()
         self.cal_m_p_s()
 
         print(self.m_p_s.to_numpy().sum())
         print(self.rho_s * 10)
-        sys.exit()
 
         self.plus_f_ext_p_from_body_force()
 
